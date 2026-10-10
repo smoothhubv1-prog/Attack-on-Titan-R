@@ -4942,6 +4942,108 @@ AddToggle(AdvForm,
     "AutoExecute",
     ApplyAutoExecute)
 
+-- ───── FPS Lock : ล็อกเฟรมเรตให้ใช้งานได้จริง ─────
+-- 1) ใช้ฟังก์ชันล็อก FPS ของ executor ถ้ามี (setfpscap / set_fps_cap / ...)
+-- 2) ถ้า executor ไม่มี -> ใช้ตัวจำกัดในสคริปต์ (หน่วงท้ายทุกเฟรม) ล็อกได้ถึง 240 FPS
+--    (ตัวนี้กิน CPU ระหว่างรอ แต่ทำให้เฟรมเรตไม่เกินค่าที่ตั้งได้จริง)
+-- 3) แถว "Current FPS" แสดง FPS ที่วัดได้จริง ดูได้เลยว่าล็อกทำงานไหม
+-- เรียกเองจาก executor ได้: _G.SmoothHubFarm.Fps.Apply() / .Measured / .Mode
+local Fps = {}
+Farm.Fps = Fps
+do
+    local RunService = game:GetService("RunService")
+    local SOFT_MAX = 240 -- ตัวจำกัดในสคริปต์ใช้ได้ถึงค่านี้ (สูงกว่านี้ต้องพึ่ง executor)
+
+    local candidates = {
+        setfpscap, set_fps_cap, setfps,
+        syn and syn.set_fps_cap, fluxus and fluxus.set_fps_cap,
+    }
+    local names = { "setfpscap", "set_fps_cap", "setfps", "syn.set_fps_cap", "fluxus.set_fps_cap" }
+    local native, nativeName = nil, nil
+    for i = 1, 5 do
+        if type(candidates[i]) == "function" then native, nativeName = candidates[i], names[i] break end
+    end
+    Fps.Native = nativeName -- ชื่อฟังก์ชันที่ executor มี (nil = ไม่มี)
+
+    local function DesiredOn() return HubConfig.EnableFPSLock and true or false end
+    local function DesiredLimit() return math.clamp(math.floor(tonumber(HubConfig.FPSLimit) or 144), 1, 9999) end
+
+    Fps.Mode = "off"      -- off | native | software | unsupported
+    Fps.Measured = 0      -- FPS ที่วัดได้จริง
+    local applied = { on = DesiredOn(), limit = DesiredLimit() }
+
+    -- ตัวจำกัดในสคริปต์: รอให้ครบเวลาต่อเฟรมก่อนจบ RenderStepped
+    local softConn = nil
+    local function StopSoft()
+        if softConn then softConn:Disconnect() softConn = nil end
+    end
+    local function StartSoft(limit)
+        StopSoft()
+        local frameTime = 1 / limit
+        local last = os.clock()
+        local conn
+        conn = RunService.RenderStepped:Connect(function()
+            if not Alive() then conn:Disconnect() return end
+            local target = last + frameTime
+            while os.clock() < target do end
+            last = os.clock()
+        end)
+        softConn = conn
+    end
+
+    function Fps.Apply()
+        local on, limit = DesiredOn(), DesiredLimit()
+        StopSoft()
+        if on then
+            if native then
+                pcall(native, limit)
+                Fps.Mode = "native"
+            elseif limit >= 9999 then
+                Fps.Mode = "off" -- Unlimited = ไม่ต้องจำกัด
+            elseif limit <= SOFT_MAX then
+                StartSoft(limit)
+                Fps.Mode = "software"
+            else
+                Fps.Mode = "unsupported"
+            end
+        else
+            if native then pcall(native, 9999) end
+            Fps.Mode = "off"
+        end
+        applied.on, applied.limit = on, limit
+    end
+
+    -- เรียกทุกวินาที: ถ้าค่าถูกเปลี่ยน (เช่น สลับ Config) ให้ apply ใหม่ / ถ้าเกมรีเซ็ตเพดาน ให้ย้ำค่าเดิม
+    function Fps.Reassert()
+        local on, limit = DesiredOn(), DesiredLimit()
+        if on ~= applied.on or limit ~= applied.limit then
+            Fps.Apply()
+        elseif on and Fps.Mode == "native" then
+            pcall(native, limit)
+        end
+    end
+
+    -- วัด FPS จริงทุก 0.5 วินาที
+    local frames, lastT = 0, os.clock()
+    local counter
+    counter = RunService.RenderStepped:Connect(function()
+        if not Alive() then counter:Disconnect() return end
+        frames += 1
+    end)
+    task.spawn(function()
+        while Alive() do
+            task.wait(0.5)
+            local now = os.clock()
+            local dt = now - lastT
+            if dt > 0 then Fps.Measured = frames / dt end
+            frames, lastT = 0, now
+            if Fps.OnUpdate then pcall(Fps.OnUpdate, Fps.Measured, Fps.Mode, Fps.Native) end
+        end
+    end)
+
+    if DesiredOn() then Fps.Apply() end -- เปิดล็อกไว้ในไฟล์เซฟ = ใช้ทันทีตอนโหลด
+end
+
 local FpsSection = AdvancedTab:PageSection({
     Title = "🖥️ FPS",
     Subtitle = "Limit the frame rate of the game."
@@ -4949,9 +5051,7 @@ local FpsSection = AdvancedTab:PageSection({
 local FpsForm = FpsSection:Form()
 
 AddToggle(FpsForm, "Enable FPS Lock", "Toggle frame rate limiting on or off.", "EnableFPSLock", function(value)
-    if setfpscap then
-        setfpscap(value and HubConfig.FPSLimit or 9999)
-    end
+    Fps.Apply()
 end)
 
 local FpsMenuRow = FpsForm:Row()
@@ -4971,9 +5071,7 @@ local FpsBtn = FpsMenuRow:Right():PullDownButton({
         local target = fpsValues[index]
         HubConfig.FPSLimit = target
         self.Label = fpsOptions[index]
-        if HubConfig.EnableFPSLock and setfpscap then
-            setfpscap(target)
-        end
+        if HubConfig.EnableFPSLock then Fps.Apply() end
     end
 })
 StyleDropdown(FpsBtn)
@@ -4982,6 +5080,29 @@ UiSync.Add(function()
     FpsBtn.Value = i
     FpsBtn.Label = fpsOptions[i]
 end)
+
+-- แถวแสดง FPS ที่วัดได้จริง + สถานะการล็อก
+local FpsStatusRow = FpsForm:Row()
+local FpsStatusStack = FpsStatusRow:Left():TitleStack({
+    Title = "Current FPS ( -- )",
+    Subtitle = "Measured live so you can see whether the lock is working."
+})
+Fps.OnUpdate = function(fps, mode, nativeName)
+    local text
+    if mode == "native" then
+        text = "Locked at " .. tostring(HubConfig.FPSLimit) .. " FPS using " .. tostring(nativeName) .. "."
+    elseif mode == "software" then
+        text = "Locked at " .. tostring(HubConfig.FPSLimit) .. " FPS by the built-in limiter (your executor has no FPS cap function)."
+    elseif mode == "unsupported" then
+        text = "Can't lock above 240 FPS: your executor has no FPS cap function."
+    else
+        text = "Lock is off." .. (nativeName and (" Executor supports " .. nativeName .. ".") or " Executor has no FPS cap function (built-in limiter will be used up to 240 FPS).")
+    end
+    pcall(function()
+        FpsStatusStack.Title = "Current FPS ( " .. tostring(math.floor(fps + 0.5)) .. " )"
+        FpsStatusStack.Subtitle = text
+    end)
+end
 
 end
 
@@ -5512,7 +5633,7 @@ do
         UiSync.Refresh()
 
         -- FPS: ใช้ค่าเริ่มต้นทันที (ปิดล็อก = ไม่จำกัด)
-        if setfpscap then pcall(setfpscap, HubConfig.EnableFPSLock and HubConfig.FPSLimit or 9999) end
+        pcall(Farm.Fps.Apply)
 
         -- หน้าตา: ธีม / สี / เบลอ / เงา / ปุ่มลัดซ่อนหน้าต่าง (ชุดเดียวกับ Config ค่าเริ่มต้น)
         ApplyLook(ConfigStore.DEFAULT_LOOK)
@@ -5622,9 +5743,7 @@ end)
 -- FPS Lock (ย้ำค่าเรื่อย ๆ เผื่อเกมรีเซ็ต)
 task.spawn(function()
     while Alive() do
-        if HubConfig.EnableFPSLock and setfpscap then
-            pcall(setfpscap, HubConfig.FPSLimit)
-        end
+        pcall(Farm.Fps.Reassert)
         task.wait(1)
     end
 end)
