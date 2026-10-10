@@ -1747,7 +1747,7 @@ do
         end
     end
     AddFarmSlider(OptionsForm, function(v) return "Retry Amount ( " .. v .. " )" end,
-        "Adjust retry time.", "RetryAmount", "OnRetryAmount")
+        "Matches to retry before leaving (used by Auto Leave After X Matches).", "RetryAmount", "OnRetryAmount")
     AddFarmToggle(OptionsForm, "Auto Leave After X Matches",
         "Retry until the Retry Amount is reached, then leave to the lobby (needs Auto Retry). Can't be on together with Auto Leave.",
         "AutoLeaveWhenRetryComplete", "OnAutoLeaveWhenRetryComplete")
@@ -2965,8 +2965,8 @@ end
 --  • รอบละ 1 ครั้งต่อหนึ่งหน้า ถ้าหน้ายังค้างหลังรอ ค่อยลองซ้ำได้อีก 1 ครั้งแล้วหยุด
 -- ลำดับความสำคัญเมื่อด่านจบ:
 --  1) Auto Leave เปิด            -> ออกทันที (ไม่ Retry)
---  2) Auto Retry เปิด            -> Retry จนครบ Retry Amount
---     ครบแล้ว + Auto Leave After X Matches เปิด -> ออก / ถ้าไม่ได้เปิด -> หยุดยิง
+--  2) Auto Retry เปิด            -> Retry ต่อเรื่อยๆ ไม่จำกัดจำนวน
+--     ถ้าเปิด Auto Leave After X Matches ด้วย -> Retry จนครบ Retry Amount แล้วออกไปล็อบบี้
 --  Auto Leave กับ Auto Leave After X Matches เปิดพร้อมกันไม่ได้ (เปิดอันหนึ่ง อีกอันจะปิดเอง)
 ---------------------------------------------------------
 do
@@ -3144,6 +3144,14 @@ do
             end
         end
 
+        -- ข้อความนับรอบ: เปิด Auto Leave After X Matches = นับ x/จำนวนที่ตั้ง, ไม่เปิด = เล่นต่อไม่จำกัด
+        local function Progress(done)
+            if Cfg.AutoLeaveWhenRetryComplete then
+                return ("%d/%d"):format(done, Cfg.RetryAmount)
+            end
+            return tostring(done) .. " / endless"
+        end
+
         local function DoRetry(title)
             if tries >= MAX_RETRY_TRIES or (tries > 0 and os.clock() - lastTry < RETRY_GAP) then
                 Status("Retry sent - waiting for the game")
@@ -3163,7 +3171,7 @@ do
             end
             tries += 1
             lastTry = os.clock()
-            Status(("Retrying... (%d/%d)"):format(Cfg.RetryDone + (counted and 0 or 1), Cfg.RetryAmount))
+            Status("Retrying... (" .. Progress(Cfg.RetryDone + (counted and 0 or 1)) .. ")")
             local ok, r = FireRetry()
             if Farm.Debug then print("[SmoothHub] Retry fired:", ok, r) end
             if ok then
@@ -3173,7 +3181,7 @@ do
                     Save()
                     Farm.RefreshRetry()
                 end
-                Status(("Retry sent (%d/%d)"):format(Cfg.RetryDone, Cfg.RetryAmount))
+                Status("Retry sent (" .. Progress(Cfg.RetryDone) .. ")")
             else
                 Status("Retry failed: " .. tostring(r))
             end
@@ -3196,7 +3204,7 @@ do
                     if os.clock() - goneSince >= GONE_TIME then ResetScreenState() end
                     if not seenSince then
                         if Cfg.AutoRetry then
-                            Status(("Waiting for the mission to finish (%d/%d)"):format(Cfg.RetryDone, Cfg.RetryAmount))
+                            Status("Waiting for the mission to finish (" .. Progress(Cfg.RetryDone) .. ")")
                         else
                             Status("Waiting for the mission to finish")
                         end
@@ -3209,12 +3217,9 @@ do
                     elseif screenMode == "leave" or Cfg.AutoLeave then
                         DoLeave(title, "Auto Leave")
                     elseif Cfg.AutoRetry then
-                        if Cfg.RetryDone >= Cfg.RetryAmount then
-                            if Cfg.AutoLeaveWhenRetryComplete then
-                                DoLeave(title, ("after %d matches"):format(Cfg.RetryAmount))
-                            else
-                                Status(("Retry limit reached (%d/%d)"):format(Cfg.RetryDone, Cfg.RetryAmount))
-                            end
+                        -- จำกัดจำนวนรอบเฉพาะตอนเปิด Auto Leave After X Matches เท่านั้น ไม่งั้น Retry ต่อไปเรื่อยๆ
+                        if Cfg.AutoLeaveWhenRetryComplete and Cfg.RetryDone >= Cfg.RetryAmount then
+                            DoLeave(title, ("after %d matches"):format(Cfg.RetryAmount))
                         else
                             DoRetry(title)
                         end
@@ -4749,6 +4754,7 @@ local HubConfig = {
     AntiAFK = true,
     AutoRejoin = true,
     AntiAdmin = true,
+    AutoExecute = false,
     EnableFPSLock = false,
     FPSLimit = 144,
 }
@@ -4756,6 +4762,115 @@ for key, value in pairs(HubConfig) do UiSync.Defaults.Hub[key] = value end
 ConfigStore.BuildDefault(UiSync.Defaults.Hub) -- config ค่าเริ่มต้นครบทุกค่าแล้ว
 SettingsStore.Restore(HubConfig, SavedData.Hub)
 ConfigStore.ApplyHub(HubConfig, ConfigStore.AutoloadSnapshot())
+
+-- ───── Auto Execute: ให้สคริปต์รันต่อเองหลังเทเลพอร์ต (Server Hop / Rejoin / ย้ายแมพ) ─────
+-- ใช้ queue_on_teleport ของ executor (ไม่ใช่ทุกตัวที่มี) คิวไว้ 1 ครั้งต่อการเทเลพอร์ต
+-- สคริปต์ที่รันใหม่จะคิวต่อให้เองตอนเริ่ม (ถ้าสวิตช์ยังเปิดอยู่) จึงทำงานต่อเนื่อง
+-- ตัวที่ถูกคิวไว้จะเช็กไฟล์เซฟก่อนรัน ถ้าปิดสวิตช์ไปแล้วจะไม่รัน
+local AUTOEXEC_URL = "https://raw.githubusercontent.com/smoothhubv1-prog/Attack-on-Titan-R/refs/heads/main/Ui.lua"
+local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+
+local AUTOEXEC_LOCK = "SmoothHub/AutoExec.lock" -- กันตัวที่คิวไว้รันซ้ำในเซิร์ฟเวอร์เดียวกัน
+local AUTOEXEC_LOG = "SmoothHub/AutoExec.log" -- บันทึกสั้นๆ ว่าคิวทำงานไหม (ไว้ไล่หาสาเหตุถ้ารันต่อไม่ติด)
+local function AutoExecLog(text)
+    pcall(function()
+        if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("SmoothHub") then
+            makefolder("SmoothHub")
+        end
+        local line = tostring(os.time()) .. " place=" .. tostring(game.PlaceId) .. " " .. text .. "\n"
+        if type(appendfile) == "function" then
+            appendfile(AUTOEXEC_LOG, line)
+        elseif type(writefile) == "function" then
+            writefile(AUTOEXEC_LOG, line)
+        end
+    end)
+end
+
+local function QueueAutoExecute()
+    if type(queueTeleport) ~= "function" then
+        AutoExecLog("queue_on_teleport not supported by this executor")
+        return false
+    end
+    -- ตัวที่ถูกคิวไว้: รอเกมโหลด -> เช็กว่าสวิตช์ยังเปิดอยู่ -> โหลดสคริปต์ (ลองใหม่ได้ 5 ครั้ง) -> เขียนผลลงบันทึก
+    local payload = string.format([[
+        local LOG = %q
+        local LOCK = %q
+        local function log(text)
+            pcall(function()
+                if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("SmoothHub") then makefolder("SmoothHub") end
+                local line = tostring(os.time()) .. " place=" .. tostring(game.PlaceId) .. " [queued] " .. text .. "\n"
+                if type(appendfile) == "function" then appendfile(LOG, line)
+                elseif type(writefile) == "function" then writefile(LOG, line) end
+            end)
+        end
+        log("started")
+        if not game:IsLoaded() then game.Loaded:Wait() end
+        local Players = game:GetService("Players")
+        while not Players.LocalPlayer do task.wait() end
+
+        local run = true
+        pcall(function()
+            if type(isfile) == "function" and isfile(%q) then
+                local data = game:GetService("HttpService"):JSONDecode(readfile(%q))
+                if type(data) == "table" and type(data.Hub) == "table" and data.Hub.AutoExecute == false then run = false end
+            end
+        end)
+        if not run then log("skipped (Auto Execute is off)") return end
+
+        -- กันรันซ้ำ: เซิร์ฟเวอร์เดิม (JobId เดียวกัน) ที่เพิ่งรันไปไม่ถึง 20 วินาที = ข้าม
+        local jobId = tostring(game.JobId)
+        pcall(function()
+            if jobId ~= "" and type(isfile) == "function" and isfile(LOCK) then
+                local id, t = tostring(readfile(LOCK)):match("^(.-)|(%%d+)$")
+                if id == jobId and t and os.time() - tonumber(t) < 20 then run = false end
+            end
+        end)
+        if not run then log("skipped (already started in this server)") return end
+        pcall(function() writefile(LOCK, jobId .. "|" .. tostring(os.time())) end)
+
+        local src, err
+        for i = 1, 5 do
+            local ok, res = pcall(function() return game:HttpGet(%q) end)
+            if ok and type(res) == "string" and #res > 0 then src = res break end
+            err = res
+            task.wait(1)
+        end
+        if not src then log("download failed: " .. tostring(err)) return end
+        local fn, cerr = loadstring(src)
+        if not fn then log("compile failed: " .. tostring(cerr)) return end
+        local ok, rerr = pcall(fn)
+        log(ok and "script started" or ("script error: " .. tostring(rerr)))
+    ]], AUTOEXEC_LOG, AUTOEXEC_LOCK, SettingsStore.Path("AOTR"), SettingsStore.Path("AOTR"), AUTOEXEC_URL)
+    local ok, err = pcall(queueTeleport, payload)
+    AutoExecLog(ok and "queued" or ("queue failed: " .. tostring(err)))
+    return ok
+end
+
+local function ApplyAutoExecute(on)
+    if on then
+        SettingsStore.Flush("AOTR") -- เซฟค่าที่เปิดทันที ตัวที่คิวไว้จะอ่านไฟล์นี้ก่อนรัน
+        QueueAutoExecute()
+    elseif type(clear_teleport_queue) == "function" then
+        pcall(clear_teleport_queue)
+    end
+end
+if HubConfig.AutoExecute then QueueAutoExecute() end
+
+-- คิวใหม่ทุกครั้งที่ "เริ่มเทเลพอร์ต" (รวมที่เกมสั่งจากเซิร์ฟเวอร์ เช่นตอนเข้าด่าน)
+-- executor บางตัวล้างคิวเก่าตอนย้ายแมพ หรือไม่ยิงคิวที่ตั้งไว้ล่วงหน้า การคิวตอนเทเลพอร์ตเริ่มจะแก้ตรงนี้
+if type(queueTeleport) == "function" then
+    local lastQueuedAt = 0
+    pcall(function()
+        LocalPlayer.OnTeleport:Connect(function(state)
+            if not Alive() or not HubConfig.AutoExecute then return end
+            if os.clock() - lastQueuedAt < 5 then return end
+            lastQueuedAt = os.clock()
+            AutoExecLog("teleport started (" .. tostring(state) .. ") - re-queue")
+            if type(clear_teleport_queue) == "function" then pcall(clear_teleport_queue) end
+            QueueAutoExecute()
+        end)
+    end)
+end
 
 local function HopServer()
     pcall(function()
@@ -4815,6 +4930,12 @@ AddToggle(AdvForm, "Infinite Jump", "Allow your character to jump infinitely in 
 AddToggle(AdvForm, "Anti-AFK", "Prevent being kicked out of the game due to inactivity.", "AntiAFK")
 AddToggle(AdvForm, "Auto Rejoin", "Automatically rejoin the game if disconnected or kicked.", "AutoRejoin")
 AddToggle(AdvForm, "Anti Admin", "Automatically server hop if an admin joins the game.", "AntiAdmin")
+AddToggle(AdvForm,
+    "Auto Execute",
+    type(queueTeleport) == "function" and "Run the script again after teleporting or rejoining a server."
+        or "Not supported by your executor.",
+    "AutoExecute",
+    ApplyAutoExecute)
 
 local FpsSection = AdvancedTab:PageSection({
     Title = "🖥️ FPS",
@@ -5503,3 +5624,119 @@ task.spawn(function()
     end
 end)
 end
+
+---------------------------------------------------------
+-- 🏝️ แจ้งเตือนตอนโหลดสคริปต์เสร็จ (สไตล์ Dynamic Island)
+-- แคปซูลดำกลางบน: เริ่มเล็ก -> ขยายออก -> โชว์ข้อความ -> หุบกลับแล้วหายไป
+---------------------------------------------------------
+task.spawn(function()
+    local TweenService = game:GetService("TweenService")
+    local parent = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+
+    pcall(function()
+        local old = parent:FindFirstChild("SmoothHubIsland")
+        if old then old:Destroy() end
+    end)
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "SmoothHubIsland"
+    gui.IgnoreGuiInset = true
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 999999
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    local okParent = pcall(function() gui.Parent = parent end)
+    if not okParent or not gui.Parent then gui.Parent = PlayerGui end
+
+    -- ขนาดตอนขยาย: จอแคบ (มือถือ) ให้ข้อความขึ้นสองบรรทัดได้
+    local viewport = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1280, 720)
+    local fullW = math.min(430, viewport.X - 24)
+    local fullH = fullW < 400 and 78 or 62
+    local smallW, smallH = 120, 34
+
+    local pill = Instance.new("Frame")
+    pill.Name = "Pill"
+    pill.AnchorPoint = Vector2.new(0.5, 0)
+    pill.Position = UDim2.new(0.5, 0, 0, 12)
+    pill.Size = UDim2.fromOffset(smallW, smallH)
+    pill.BackgroundColor3 = Color3.new(0, 0, 0)
+    pill.BackgroundTransparency = 1
+    pill.BorderSizePixel = 0
+    pill.ClipsDescendants = true
+    pill.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = pill
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.new(1, 1, 1)
+    stroke.Transparency = 1
+    stroke.Thickness = 1
+    stroke.Parent = pill
+
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 20)
+    pad.PaddingRight = UDim.new(0, 20)
+    pad.Parent = pill
+
+    -- บรรทัดบน: ชื่อค่ายสีฟ้า
+    local header = Instance.new("TextLabel")
+    header.BackgroundTransparency = 1
+    header.Size = UDim2.new(1, 0, 0, 16)
+    header.Position = UDim2.new(0, 0, 0, 9)
+    header.Font = Enum.Font.GothamBold
+    header.Text = "Smooth Hub"
+    header.TextSize = 12
+    header.TextColor3 = Color3.fromHex("#0A84FF")
+    header.TextXAlignment = Enum.TextXAlignment.Center
+    header.TextTransparency = 1
+    header.Parent = pill
+
+    -- บรรทัดล่าง: ข้อความแจ้งเตือน (แดง = ชื่อสคริปต์, เขียว = ชื่อค่าย)
+    local body = Instance.new("TextLabel")
+    body.BackgroundTransparency = 1
+    body.Size = UDim2.new(1, 0, 1, -28)
+    body.Position = UDim2.new(0, 0, 0, 25)
+    body.Font = Enum.Font.GothamMedium
+    body.RichText = true
+    body.TextWrapped = true
+    body.TextSize = 14
+    body.TextColor3 = Color3.new(1, 1, 1)
+    body.TextXAlignment = Enum.TextXAlignment.Center
+    body.TextYAlignment = Enum.TextYAlignment.Top
+    body.Text = 'Loaded <font color="#FF453A">Attack on Titan script</font> by <font color="#30D158">Smooth Hub</font> successfully'
+    body.TextTransparency = 1
+    body.Parent = pill
+
+    local function tween(obj, time, props, style, dir)
+        local t = TweenService:Create(obj, TweenInfo.new(time, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
+        t:Play()
+        return t
+    end
+
+    -- 1) แคปซูลเล็กโผล่ขึ้นมา
+    tween(pill, 0.25, { BackgroundTransparency = 0 })
+    tween(stroke, 0.25, { Transparency = 0.88 })
+    task.wait(0.3)
+    if not Alive() then gui:Destroy() return end
+
+    -- 2) ขยายออก (เด้งนิดๆ แบบ Dynamic Island) แล้วค่อยโชว์ข้อความ
+    tween(pill, 0.55, { Size = UDim2.fromOffset(fullW, fullH) }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+    task.wait(0.2)
+    tween(header, 0.3, { TextTransparency = 0 })
+    tween(body, 0.3, { TextTransparency = 0 })
+
+    -- 3) ค้างไว้ให้อ่าน
+    task.wait(3.6)
+
+    -- 4) ข้อความจางหาย -> หุบกลับเป็นแคปซูลเล็ก -> หาย
+    tween(header, 0.2, { TextTransparency = 1 })
+    tween(body, 0.2, { TextTransparency = 1 })
+    task.wait(0.15)
+    tween(pill, 0.45, { Size = UDim2.fromOffset(smallW, smallH) }, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
+    task.wait(0.4)
+    tween(pill, 0.25, { BackgroundTransparency = 1 })
+    tween(stroke, 0.25, { Transparency = 1 })
+    task.wait(0.3)
+    gui:Destroy()
+end)
