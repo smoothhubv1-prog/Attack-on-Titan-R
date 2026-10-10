@@ -63,6 +63,7 @@ local Cfg = {
     FailSafeAt = 20,               -- Fail Safe At
     AutoFailSafe = false,          -- Auto Fail Safe
     NoClip = true,                 -- No Clip: ทะลุกำแพง/ไททันตอน Auto Farm ทำงาน
+    HitAllParts = true,            -- Hit All Parts: ฟันทุกชิ้นส่วนของไททัน (Eyes / แขน / ขา / Nape) ไม่ใช่แค่ Nape
     FlySpeed = 600,                -- Tween Speed: ความเร็วที่ Auto Farm บินไปหาไททัน (studs/วินาที)
     FlyHeight = 150,               -- Fly Height: ลอยสูงเหนือยอดหัวไททันกี่ studs (150 - 2000)
     AttackSpeed = 0,               -- Attack Speed: 0 = Auto, 1 = Safe, 2 = Fast, 3 = Turbo, 4 = Max
@@ -137,7 +138,7 @@ local function ApplyCfgData(data)
         "AutoClaimMain", "AutoClaimSide", "AutoClaimAchievements", "AutoClaimWeekly", "AutoClaimDaily", "AutoOpenPages",
         "AutoUpgradeBlade", "AutoUpgradeThunder", "AutoEquipThunder", "AutoEquipBlade",
         "AutoBestGrade", "AutoBoostMission", "AutoCreateMission", "AutoStartMission",
-        "AutoFarm", "AutoReload", "AutoRefills", "DamageMultiplier", "AutoFailSafe", "NoClip",
+        "AutoFarm", "AutoReload", "AutoRefills", "DamageMultiplier", "AutoFailSafe", "NoClip", "HitAllParts",
         "AutoRetry", "AutoLeave", "AutoLeaveWhenRetryComplete",
     }) do
         if type(data[key]) == "boolean" then Cfg[key] = data[key] end
@@ -1676,6 +1677,7 @@ do
     -- ───── Main ─────
     AddFarmToggle(MainForm, "Auto Farm", "Automatically completes missions.", "AutoFarm", "OnAutoFarm")
     AddFarmToggle(MainForm, "No Clip", "Pass through walls and titans while Auto Farm is on.", "NoClip", "OnNoClip")
+    AddFarmToggle(MainForm, "Hit All Parts", "Also hits Eyes, Arms and Legs - not only the Nape (Nape last, so the titan dies after the other parts).", "HitAllParts", "OnHitAllParts")
     AddFarmSlider(MainForm, function(v) return "Tween Speed ( " .. v .. " )" end,
         "How fast Auto Farm flies to the titans (studs per second).", "FlySpeed", "OnFlySpeed")
     AddFarmSlider(MainForm, function(v) return "Fly Height ( " .. v .. " )" end,
@@ -1839,6 +1841,39 @@ do
         return nil
     end
     Farm.FindNape = FindNape
+
+    -- ชิ้นส่วนที่ฟันได้ของไททัน: Titan.Hitboxes.Hit.{Eyes, LeftArm, RightArm, LeftLeg, RightLeg, Nape}
+    -- ลำดับ: ส่วนอื่นก่อน แล้ว Nape เป็นอันสุดท้ายเสมอ (กันไททันตายก่อนที่จะโดนส่วนอื่นครบ)
+    Farm.HitOrder = { "Eyes", "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
+    local function HitParts(titan)
+        local hb = titan:FindFirstChild("Hitboxes")
+        local hit = hb and hb:FindFirstChild("Hit")
+        if not hit then return {} end
+        local list, used = {}, {}
+        for _, name in ipairs(Farm.HitOrder) do
+            local part = hit:FindFirstChild(name)
+            if part and part:IsA("BasePart") then list[#list + 1] = part used[part] = true end
+        end
+        for _, part in ipairs(hit:GetChildren()) do -- ชิ้นส่วนอื่นใต้ Hit ที่ไม่อยู่ในลิสต์ (เผื่อเกมเพิ่มใหม่)
+            if part:IsA("BasePart") and part.Name ~= "Nape" and not used[part] then
+                list[#list + 1] = part
+                used[part] = true
+            end
+        end
+        local nape = hit:FindFirstChild("Nape")
+        if nape and nape:IsA("BasePart") then list[#list + 1] = nape end
+        return list
+    end
+    Farm.HitParts = HitParts
+
+    -- ชิ้นส่วนที่จะ Register ของไททันตัวนี้ (ปิด Hit All Parts = Nape อย่างเดียวเหมือนเดิม)
+    local function PartsFor(e)
+        if Cfg.HitAllParts then
+            local parts = HitParts(e.titan)
+            if #parts > 0 then return parts end
+        end
+        return { e.nape }
+    end
 
     -- จุดที่จะไปอยู่ (คืน nil ถ้าหาไม่เจอ)
     local function GoalFor(titan)
@@ -2024,6 +2059,7 @@ do
     Farm.MultiHit = true       -- ฟันไททันหลายตัวในการฟันครั้งเดียว
     Farm.MaxTargets = 100       -- สูงสุดกี่ตัวต่อการฟัน 1 ครั้ง
     Farm.MultiRange = math.huge     -- เลือกเฉพาะไททันที่ห่างจากตัวเราไม่เกินกี่ studs
+    Farm.MaxRegisters = 120         -- Hit All Parts: ส่ง Register ได้สูงสุดกี่ครั้งต่อการฟัน 1 ครั้ง (กันรีโมตถี่เกินจนแลค/โดนเตะ)
 
     -- รวมไททันที่ฟันได้: ตัวที่ล็อกอยู่ก่อน แล้วตัวอื่นที่อยู่ใกล้ที่สุดตามลำดับ
     local function CollectTargets(root, main)
@@ -2062,8 +2098,8 @@ do
     --   "Sequential" = ฟันแยกทีละตัว: (Slash true > Register > Slash false) ต่อไททันแต่ละตัว
     Farm.MultiMode = "Batch"
 
-    function Farm.Reg(post, e)
-        post:FireServer("Hitboxes", "Register", e.nape,
+    function Farm.Reg(post, e, part)
+        post:FireServer("Hitboxes", "Register", part or e.nape,
             85 + math.random() * 90,       -- ช่วงที่เห็น: 88 - 171
             0.14 + math.random() * 0.19)   -- ช่วงที่เห็น: 0.15 - 0.32
     end
@@ -2085,12 +2121,21 @@ do
     end
 
     local function Slash(post, list, p)
+        -- งบ Register ต่อการฟัน (ใช้เมื่อเปิด Hit All Parts) ไททันตัวไหนงบไม่พอให้ครบทุกส่วนจะข้ามไปเลย
+        -- (ไม่ฟันครึ่ง ๆ กลาง ๆ จนพลาด Nape) แต่ตัวแรกฟันเสมอ
+        local budget = Cfg.HitAllParts and Farm.MaxRegisters or math.huge
+        local regs = 0
         if Farm.MultiMode == "Sequential" then -- ตั้งเองได้ (ฟันแยกทีละตัว) ไม่ขึ้นกับ preset
             for _, e in ipairs(list) do
                 if e.titan.Parent and e.nape.Parent then
+                    local parts = PartsFor(e)
+                    if regs > 0 and regs + #parts > budget then break end
+                    regs += #parts
                     post:FireServer("Attacks", "Slash", true)
                     task.wait(0.05 + math.random() * 0.05)
-                    Farm.Reg(post, e)
+                    for _, part in ipairs(parts) do
+                        if part.Parent then Farm.Reg(post, e, part) end
+                    end
                     task.wait(0.1 + math.random() * 0.05)
                     post:FireServer("Attacks", "Slash", false)
                     task.wait(0.05)
@@ -2102,7 +2147,12 @@ do
         task.wait(p.windup * (1 + math.random() * 0.15))
         for _, e in ipairs(list) do
             if e.titan.Parent and e.nape.Parent then
-                Farm.Reg(post, e)
+                local parts = PartsFor(e)
+                if regs > 0 and regs + #parts > budget then break end
+                regs += #parts
+                for _, part in ipairs(parts) do
+                    if part.Parent then Farm.Reg(post, e, part) end
+                end
                 if p.perTarget then task.wait() end
             end
         end
