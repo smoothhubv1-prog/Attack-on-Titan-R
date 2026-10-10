@@ -1677,7 +1677,7 @@ do
     -- ───── Main ─────
     AddFarmToggle(MainForm, "Auto Farm", "Automatically completes missions.", "AutoFarm", "OnAutoFarm")
     AddFarmToggle(MainForm, "No Clip", "Pass through walls and titans while Auto Farm is on.", "NoClip", "OnNoClip")
-    AddFarmToggle(MainForm, "Hit All Parts", "Also hits Eyes, Arms and Legs - not only the Nape (Nape last, so the titan dies after the other parts).", "HitAllParts", "OnHitAllParts")
+    AddFarmToggle(MainForm, "Hit All Parts", "Also hits Eyes, Arms and Legs of each titan (then a 7s cooldown). The Nape is hit every swing with no cooldown.", "HitAllParts", "OnHitAllParts")
     AddFarmSlider(MainForm, function(v) return "Tween Speed ( " .. v .. " )" end,
         "How fast Auto Farm flies to the titans (studs per second).", "FlySpeed", "OnFlySpeed")
     AddFarmSlider(MainForm, function(v) return "Fly Height ( " .. v .. " )" end,
@@ -1868,13 +1868,32 @@ do
     end
     Farm.HitParts = HitParts
 
-    -- ชิ้นส่วนที่จะ Register ของไททันตัวนี้ (ปิด Hit All Parts = Nape อย่างเดียวเหมือนเดิม)
+    -- ชิ้นส่วนที่จะ Register ของไททันตัวนี้ในรอบนี้ (คืน parts, ยิงส่วนอื่นด้วยไหม)
+    --  • Nape ยิงทุกรอบ ไม่ติดคูลดาวน์ (ไททันต้องโดนท้ายทอยถึงจะตาย)
+    --  • ส่วนอื่น (Eyes / แขน / ขา) ยิงครบทุกส่วนทีเดียว แล้วพักตามไททันแต่ละตัว Farm.PartCooldown วินาที
+    --    พ้นเวลาแล้วค่อยยิงทุกส่วนอีกรอบ (ปิด Hit All Parts = Nape อย่างเดียวเหมือนเดิม)
+    local PartStamp = setmetatable({}, { __mode = "k" }) -- ไททัน -> เวลาที่ยิงส่วนอื่นครั้งล่าสุด
     local function PartsFor(e)
         if Cfg.HitAllParts then
-            local parts = HitParts(e.titan)
-            if #parts > 0 then return parts end
+            local last = PartStamp[e.titan]
+            if not last or os.clock() - last >= Farm.PartCooldown then
+                local parts = HitParts(e.titan)
+                if #parts > 1 then return parts, true end
+            end
         end
-        return { e.nape }
+        return { e.nape }, false
+    end
+
+    -- เลือกชิ้นส่วนจริงที่จะยิง โดยดูงบ Register ต่อการฟัน (regs = ที่ใช้ไปแล้วในรอบนี้)
+    -- งบไม่พอสำหรับครบทุกส่วน -> ยิงแค่ Nape (ไม่ข้ามไททันตัวนั้น) | งบหมดจริง -> nil (หยุดเก็บเพิ่ม)
+    local function PlanFor(e, regs, budget)
+        local parts, withOthers = PartsFor(e)
+        if regs > 0 and regs + #parts > budget then
+            if regs + 1 > budget then return nil end
+            parts, withOthers = { e.nape }, false
+        end
+        if withOthers then PartStamp[e.titan] = os.clock() end -- เริ่มนับคูลดาวน์ของส่วนอื่น
+        return parts
     end
 
     -- จุดที่จะไปอยู่ (คืน nil ถ้าหาไม่เจอ)
@@ -2060,6 +2079,7 @@ do
     -- ───── วิธียิงหลายชิ้นส่วน (ให้ Farm.TestParts() ทดสอบแล้วเลือกให้ หรือตั้งเอง) ─────
     Farm.PartMode = "ByTitan"  -- "ByTitan" = ไททันทีละตัว ครบทุกส่วน | "ByPart" = รอบละชิ้นส่วน (ทุกตัวโดนส่วนเดียวกันก่อน แล้วพัก PartGap)
     Farm.PartGap = 0.03        -- (เฉพาะ ByPart) พักระหว่างรอบชิ้นส่วน (วินาที)
+    Farm.PartCooldown = 7      -- Eyes/แขน/ขา ของไททันแต่ละตัว ยิงซ้ำได้ทุกกี่วินาที (Nape ไม่ติดคูลดาวน์ ยิงทุกรอบ)
     Farm.NapeFirst = false     -- true = ยิง Nape ก่อนแล้วค่อยส่วนอื่น | false = Nape ท้ายสุด
     local function PostRemote()
         local a = game:GetService("ReplicatedStorage"):FindFirstChild("Assets")
@@ -2137,15 +2157,15 @@ do
     end
 
     local function Slash(post, list, p)
-        -- งบ Register ต่อการฟัน (ใช้เมื่อเปิด Hit All Parts) ไททันตัวไหนงบไม่พอให้ครบทุกส่วนจะข้ามไปเลย
-        -- (ไม่ฟันครึ่ง ๆ กลาง ๆ จนพลาด Nape) แต่ตัวแรกฟันเสมอ
+        -- งบ Register ต่อการฟัน (ใช้เมื่อเปิด Hit All Parts) ไททันตัวไหนงบไม่พอให้ครบทุกส่วนจะยิงแค่ Nape
+        -- (Nape ยิงทุกรอบเสมอ ส่วนอื่นติดคูลดาวน์ Farm.PartCooldown ต่อไททัน 1 ตัว)
         local budget = Cfg.HitAllParts and Farm.MaxRegisters or math.huge
         local regs = 0
         if Farm.MultiMode == "Sequential" then -- ตั้งเองได้ (ฟันแยกทีละตัว) ไม่ขึ้นกับ preset
             for _, e in ipairs(list) do
                 if e.titan.Parent and e.nape.Parent then
-                    local parts = PartsFor(e)
-                    if regs > 0 and regs + #parts > budget then break end
+                    local parts = PlanFor(e, regs, budget)
+                    if not parts then break end
                     regs += #parts
                     post:FireServer("Attacks", "Slash", true)
                     task.wait(0.05 + math.random() * 0.05)
@@ -2166,8 +2186,8 @@ do
             local plan, rounds = {}, 0
             for _, e in ipairs(list) do
                 if e.titan.Parent and e.nape.Parent then
-                    local parts = PartsFor(e)
-                    if #plan > 0 and regs + #parts > budget then break end
+                    local parts = PlanFor(e, regs, budget)
+                    if not parts then break end
                     regs += #parts
                     plan[#plan + 1] = parts
                     rounds = math.max(rounds, #parts)
@@ -2183,8 +2203,8 @@ do
         else
             for _, e in ipairs(list) do
                 if e.titan.Parent and e.nape.Parent then
-                    local parts = PartsFor(e)
-                    if regs > 0 and regs + #parts > budget then break end
+                    local parts = PlanFor(e, regs, budget)
+                    if not parts then break end
                     regs += #parts
                     for _, part in ipairs(parts) do
                         if part.Parent then Farm.Reg(post, e, part) end
