@@ -1890,7 +1890,7 @@ do
                 if part == e.nape then
                     parts[#parts + 1] = part
                 elseif not RecentlyHit(part) then
-                    parts[#parts + 1] = part
+                    for _ = 1, math.max(1, math.floor(Farm.PartHits)) do parts[#parts + 1] = part end
                     others += 1
                 end
             end
@@ -2107,6 +2107,7 @@ do
     -- ───── วิธียิงหลายชิ้นส่วน (ให้ Farm.TestParts() ทดสอบแล้วเลือกให้ หรือตั้งเอง) ─────
     Farm.PartMode = "ByTitan"  -- "ByTitan" = ไททันทีละตัว ครบทุกส่วน | "ByPart" = รอบละชิ้นส่วน (ทุกตัวโดนส่วนเดียวกันก่อน แล้วพัก PartGap)
     Farm.PartGap = 0.03        -- (เฉพาะ ByPart) พักระหว่างรอบชิ้นส่วน (วินาที)
+    Farm.PartHits = 1          -- ฟันแต่ละชิ้นส่วน (Eyes/แขน/ขา) กี่ครั้งต่อรอบ (ไททันธรรมดา 1 ครั้งก็ขาดแล้ว เพิ่มเป็น 2-3 ถ้าไททันโหด)
     Farm.PartCooldown = 7      -- แต่ละชิ้นส่วน (Eyes/แขน/ขา) ของไททันแต่ละตัว ยิงซ้ำได้ทุกกี่วินาที (Nape ไม่ติดคูลดาวน์ ยิงทุกรอบ)
     Farm.NapeFirst = false     -- true = ยิง Nape ก่อนแล้วค่อยส่วนอื่น | false = Nape ท้ายสุด
     local function PostRemote()
@@ -6377,4 +6378,4 @@ task.spawn(function()
     tw(stroke, 0.4, { Transparency = 1 })
     task.wait(0.55)
     finish()
-end)
+end)    
