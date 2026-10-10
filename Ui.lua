@@ -2164,8 +2164,16 @@ do
     -- 🧪 ทดสอบว่าวิธีไหนโดนไททันหลายตัวได้จริง
     -- ใช้: ปิด Auto Farm ก่อน แล้วรัน  _G.SmoothHubFarm.TestMulti()
     -- ต้องมีไททันที่ยังไม่ตายอย่างน้อย 9 ตัว (วิธีละ 3 ตัว) ไม่ต้องอยู่ใกล้
+    -- ฟันตามสวิตช์ Hit All Parts (เปิด = ทุกชิ้นส่วน Nape ท้ายสุด / ปิด = Nape อย่างเดียว)
     -- จบแล้วจะพิมพ์ผลใน Console (F9) และตั้ง Farm.MultiMode เป็นวิธีที่ดีที่สุดให้
     ---------------------------------------------------------
+    -- ฟันทุกชิ้นส่วนของไททันตัวนี้ (ตามสวิตช์ Hit All Parts: ปิด = Nape อย่างเดียว) ใช้ชุดเดียวกับตอนฟาร์มจริง
+    local function RegAll(post, e)
+        for _, part in ipairs(PartsFor(e)) do
+            if part.Parent then Farm.Reg(post, e, part) end
+        end
+    end
+
     function Farm.TestMulti()
         task.spawn(function()
             if Cfg.AutoFarm then print("[SmoothHub] ปิด Auto Farm ก่อนทดสอบ") return end
@@ -2207,7 +2215,7 @@ do
             -- A: Batch
             post:FireServer("Attacks", "Slash", true)
             task.wait(0.35)
-            for _, e in ipairs(groups[1]) do Farm.Reg(post, e) task.wait() end
+            for _, e in ipairs(groups[1]) do RegAll(post, e) task.wait() end
             task.wait(0.55)
             post:FireServer("Attacks", "Slash", false)
             task.wait(2)
@@ -2216,7 +2224,7 @@ do
             -- B: Burst
             post:FireServer("Attacks", "Slash", true)
             task.wait(0.35)
-            for _, e in ipairs(groups[2]) do Farm.Reg(post, e) end
+            for _, e in ipairs(groups[2]) do RegAll(post, e) end
             task.wait(0.55)
             post:FireServer("Attacks", "Slash", false)
             task.wait(2)
@@ -2226,7 +2234,7 @@ do
             for _, e in ipairs(groups[3]) do
                 post:FireServer("Attacks", "Slash", true)
                 task.wait(0.07)
-                Farm.Reg(post, e)
+                RegAll(post, e)
                 task.wait(0.12)
                 post:FireServer("Attacks", "Slash", false)
                 task.wait(0.05)
