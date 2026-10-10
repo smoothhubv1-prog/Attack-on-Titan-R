@@ -1716,7 +1716,7 @@ do
     end
     do -- แถวสถิติของ Auto Farm (ดูว่าไททันกี่ตัวที่ฟันได้จริง / ฟันกี่ครั้งต่อวินาที)
         local statsRow = MainForm:Row()
-        statsRow:Left():TitleStack({ Title = "Farm Stats", Subtitle = "Titans loaded / total | swings per second | speed level | kills" })
+        statsRow:Left():TitleStack({ Title = "Farm Stats", Subtitle = "Titans loaded / total | swings per second | speed level | kills | hit rate" })
         local statsLabel = statsRow:Right():Label({ Text = "Off" })
         local lastText = nil
         function Farm.SetStatsText(text)
@@ -1861,7 +1861,9 @@ do
             end
         end
         local nape = hit:FindFirstChild("Nape")
-        if nape and nape:IsA("BasePart") then list[#list + 1] = nape end
+        if nape and nape:IsA("BasePart") then
+            if Farm.NapeFirst then table.insert(list, 1, nape) else list[#list + 1] = nape end
+        end
         return list
     end
     Farm.HitParts = HitParts
@@ -2050,6 +2052,15 @@ do
     Farm.AttackRange = 10000     -- ต้องอยู่ห่างท้ายทอยไม่เกินกี่ studs ถึงจะฟัน
     Farm.AttackDelay = 0.001     -- พักระหว่างการฟันแต่ละครั้ง (วินาที)
     Farm.Kills = 0
+    -- ───── ความแม่นของการฟัน (ดูได้ที่แถว Farm Stats: "hit %") ─────
+    -- นับต่อไททันทุกตัวที่ฟันไปในแต่ละรอบ: เลือดลดหรือตาย = โดน / ไม่ลด = พลาด
+    Farm.MissCount = setmetatable({}, { __mode = "k" }) -- ไททันตัวนี้ฟันพลาดติดกันกี่รอบ
+    Farm.MissLimit = 3         -- พลาดติดกันเท่านี้ = เลื่อนไปท้ายคิว (ให้งบ Register ไปลงตัวที่โดนจริงก่อน) โดนเมื่อไหร่กลับมาปกติ
+    Farm.HitStat = { hit = 0, tried = 0 }
+    -- ───── วิธียิงหลายชิ้นส่วน (ให้ Farm.TestParts() ทดสอบแล้วเลือกให้ หรือตั้งเอง) ─────
+    Farm.PartMode = "ByTitan"  -- "ByTitan" = ไททันทีละตัว ครบทุกส่วน | "ByPart" = รอบละชิ้นส่วน (ทุกตัวโดนส่วนเดียวกันก่อน แล้วพัก PartGap)
+    Farm.PartGap = 0.03        -- (เฉพาะ ByPart) พักระหว่างรอบชิ้นส่วน (วินาที)
+    Farm.NapeFirst = false     -- true = ยิง Nape ก่อนแล้วค่อยส่วนอื่น | false = Nape ท้ายสุด
     local function PostRemote()
         local a = game:GetService("ReplicatedStorage"):FindFirstChild("Assets")
         local r = a and a:FindFirstChild("Remotes")
@@ -2083,7 +2094,12 @@ do
                     end
                 end
             end
-            table.sort(others, function(x, y) return x.d < y.d end)
+            table.sort(others, function(x, y)
+                local mx = (Farm.MissCount[x.titan] or 0) >= Farm.MissLimit and 1 or 0
+                local my = (Farm.MissCount[y.titan] or 0) >= Farm.MissLimit and 1 or 0
+                if mx ~= my then return mx < my end -- ตัวที่ฟันพลาดติด ๆ ไปท้ายคิว
+                return x.d < y.d
+            end)
             for _, o in ipairs(others) do
                 if #list >= Farm.MaxTargets then break end
                 list[#list + 1] = o
@@ -2145,15 +2161,36 @@ do
         end
         post:FireServer("Attacks", "Slash", true)
         task.wait(p.windup * (1 + math.random() * 0.15))
-        for _, e in ipairs(list) do
-            if e.titan.Parent and e.nape.Parent then
-                local parts = PartsFor(e)
-                if regs > 0 and regs + #parts > budget then break end
-                regs += #parts
-                for _, part in ipairs(parts) do
-                    if part.Parent then Farm.Reg(post, e, part) end
+        if Cfg.HitAllParts and Farm.PartMode == "ByPart" then
+            -- รอบละชิ้นส่วน: ทุกตัวโดนส่วนเดียวกันก่อน พัก PartGap แล้วค่อยส่วนถัดไป (Nape ท้ายสุด/ก่อนตาม NapeFirst)
+            local plan, rounds = {}, 0
+            for _, e in ipairs(list) do
+                if e.titan.Parent and e.nape.Parent then
+                    local parts = PartsFor(e)
+                    if #plan > 0 and regs + #parts > budget then break end
+                    regs += #parts
+                    plan[#plan + 1] = parts
+                    rounds = math.max(rounds, #parts)
                 end
-                if p.perTarget then task.wait() end
+            end
+            for round = 1, rounds do
+                for _, parts in ipairs(plan) do
+                    local part = parts[round]
+                    if part and part.Parent then Farm.Reg(post, nil, part) end
+                end
+                if round < rounds and Farm.PartGap > 0 then task.wait(Farm.PartGap) end
+            end
+        else
+            for _, e in ipairs(list) do
+                if e.titan.Parent and e.nape.Parent then
+                    local parts = PartsFor(e)
+                    if regs > 0 and regs + #parts > budget then break end
+                    regs += #parts
+                    for _, part in ipairs(parts) do
+                        if part.Parent then Farm.Reg(post, e, part) end
+                    end
+                    if p.perTarget then task.wait() end
+                end
             end
         end
         task.wait(p.release * (1 + math.random() * 0.15))
@@ -2255,6 +2292,113 @@ do
     end
 
     ---------------------------------------------------------
+    -- 🧪 ทดสอบวิธียิงหลายชิ้นส่วนว่าวิธีไหนโดนมากสุด (ฟันไม่โดนบางครั้ง = ลองรันตัวนี้)
+    -- ใช้: ปิด Auto Farm ก่อน แล้วรัน  _G.SmoothHubFarm.TestParts()
+    -- ต้องมีไททันที่โหลดแล้วและยังไม่ตายอย่างน้อย 8 ตัว (ใช้ 4 วิธี วิธีละ 2 ตัว / ถ้ามี 12 ตัวขึ้นไปวิธีละ 3 ตัว)
+    --   A = Nape อย่างเดียว | B = ทุกส่วนทีละตัว Nape ท้ายสุด | C = ทุกส่วนรอบละชิ้นส่วน | D = ทุกส่วนทีละตัว Nape ก่อน
+    -- จบแล้วพิมพ์ผลใน Console (F9) และตั้ง Farm.PartMode / Farm.NapeFirst เป็นวิธีที่ดีที่สุดให้ (B / C / D)
+    ---------------------------------------------------------
+    function Farm.TestParts()
+        task.spawn(function()
+            if Cfg.AutoFarm then print("[SmoothHub] ปิด Auto Farm ก่อนทดสอบ") return end
+            local post = PostRemote()
+            local char = LocalPlayer.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if not (post and root) then print("[SmoothHub] ไม่พบ POST remote หรือตัวละคร") return end
+
+            local pool = {}
+            local folder = TitansFolder()
+            for _, t in ipairs(folder and folder:GetChildren() or {}) do
+                if t:IsA("Model") and IsAlive(t) then
+                    local nape = FindNape(t)
+                    local hum = t:FindFirstChildOfClass("Humanoid")
+                    if nape and hum then
+                        pool[#pool + 1] = { titan = t, nape = nape, hum = hum, d = (nape.Position - root.Position).Magnitude }
+                    end
+                end
+            end
+            table.sort(pool, function(x, y) return x.d < y.d end)
+            local size = (#pool >= 12) and 3 or 2
+            if #pool < size * 4 then
+                print(("[SmoothHub] ต้องมีไททันที่โหลดแล้วอย่างน้อย %d ตัว (ตอนนี้ %d)"):format(size * 4, #pool))
+                return
+            end
+            local groups = {}
+            for g = 1, 4 do
+                groups[g] = {}
+                for k = 1, size do
+                    local e = pool[(g - 1) * size + k]
+                    e.hp0 = e.hum.Health
+                    groups[g][k] = e
+                end
+            end
+            local function Hurt(g) -- (ตาย, โดนดาเมจ)
+                local dead, hurt = 0, 0
+                for _, e in ipairs(g) do
+                    if not IsAlive(e.titan) then dead += 1 hurt += 1
+                    elseif e.hum.Health < e.hp0 then hurt += 1 end
+                end
+                return dead, hurt
+            end
+            local function Swing(g, fire)
+                post:FireServer("Attacks", "Slash", true)
+                task.wait(0.35)
+                fire(g)
+                task.wait(0.55)
+                post:FireServer("Attacks", "Slash", false)
+                task.wait(2)
+                return Hurt(g)
+            end
+            local function ByTitan(g)
+                for _, e in ipairs(g) do
+                    for _, part in ipairs(HitParts(e.titan)) do
+                        if part.Parent then Farm.Reg(post, e, part) end
+                    end
+                    task.wait()
+                end
+            end
+            local function ByPart(g)
+                local lists, rounds = {}, 0
+                for i, e in ipairs(g) do
+                    lists[i] = HitParts(e.titan)
+                    rounds = math.max(rounds, #lists[i])
+                end
+                for round = 1, rounds do
+                    for i = 1, #g do
+                        local part = lists[i][round]
+                        if part and part.Parent then Farm.Reg(post, nil, part) end
+                    end
+                    task.wait(Farm.PartGap)
+                end
+            end
+
+            local savedFirst = Farm.NapeFirst
+            local aD, aH = Swing(groups[1], function(g) for _, e in ipairs(g) do Farm.Reg(post, e) task.wait() end end)
+            Farm.NapeFirst = false
+            local bD, bH = Swing(groups[2], ByTitan)
+            local cD, cH = Swing(groups[3], ByPart)
+            Farm.NapeFirst = true
+            local dD, dH = Swing(groups[4], ByTitan)
+            Farm.NapeFirst = savedFirst
+
+            print(("[SmoothHub] ผลทดสอบ (วิธีละ %d ตัว)  A Nape อย่างเดียว: ตาย %d / โดน %d  |  B ทุกส่วน(Nape ท้าย): ตาย %d / โดน %d  |  C รอบละชิ้นส่วน: ตาย %d / โดน %d  |  D ทุกส่วน(Nape ก่อน): ตาย %d / โดน %d")
+                :format(size, aD, aH, bD, bH, cD, cH, dD, dH))
+
+            local best, bestScore = "B", bD * 10 + bH
+            for _, r in ipairs({ { "C", cD * 10 + cH }, { "D", dD * 10 + dH } }) do
+                if r[2] > bestScore then best, bestScore = r[1], r[2] end
+            end
+            if best == "C" then Farm.PartMode, Farm.NapeFirst = "ByPart", false
+            elseif best == "D" then Farm.PartMode, Farm.NapeFirst = "ByTitan", true
+            else Farm.PartMode, Farm.NapeFirst = "ByTitan", false end
+            print("[SmoothHub] ตั้ง Farm.PartMode =", Farm.PartMode, "| Farm.NapeFirst =", Farm.NapeFirst)
+            if aD * 10 + aH >= bestScore then
+                print("[SmoothHub] Nape อย่างเดียวโดนไม่น้อยกว่าทุกส่วน -> ลองปิดสวิตช์ Hit All Parts ดู (ไม่ได้ปิดให้เอง)")
+            end
+        end)
+    end
+
+    ---------------------------------------------------------
     -- ⏱️ Safe Time: ด่านต้องไม่จบเร็วกว่าที่คนจริงทำได้
     -- นับจากตอนเห็นไททันตัวแรกของด่าน ก่อนครบเวลาที่ตั้งไว้จะ "เก็บไททันไว้ 1 ตัว" ไม่ฟัน
     -- (ด่านที่ต้องฆ่าไททันให้หมดจึงจบไม่ได้) ครบเวลาแล้วค่อยฟันตัวสุดท้าย
@@ -2332,15 +2476,21 @@ do
     end
     local function Judge(g) -- true = มีไททันโดนดาเมจหรือตายอย่างน้อย 1 ตัว
         local hit = false
+        local S = Farm.HitStat
         for _, it in ipairs(g.items) do
             local alive = IsAlive(it.titan)
-            if not alive then
-                if not counted[it.titan] then counted[it.titan] = true Farm.Kills += 1 end
+            local damaged = (not alive) or it.hum.Health < it.hp0
+            S.tried += 1
+            if damaged then
+                S.hit += 1
                 hit = true
-            elseif it.hum.Health < it.hp0 then
-                hit = true
+                Farm.MissCount[it.titan] = 0
+                if not alive and not counted[it.titan] then counted[it.titan] = true Farm.Kills += 1 end
+            else
+                Farm.MissCount[it.titan] = (Farm.MissCount[it.titan] or 0) + 1
             end
         end
+        if S.tried > 300 then S.tried, S.hit = S.tried / 2, S.hit / 2 end -- ให้ตัวเลขสะท้อนช่วงหลัง ๆ
         return hit
     end
 
@@ -2431,8 +2581,10 @@ do
                         end
                     end
                     local preset = Farm.Presets[Farm.Level]
-                    Farm.SetStatsText(("%d/%d | %.1f/s | %s%s | K%d%s"):format(
-                        alive, total, perSec, preset and preset.name or "?", want == 0 and " (auto)" or "", Farm.Kills,
+                    local S = Farm.HitStat
+                    local pct = S.tried > 0 and math.floor(S.hit / S.tried * 100 + 0.5) or 0
+                    Farm.SetStatsText(("%d/%d | %.1f/s | %s%s | K%d | hit %d%%%s"):format(
+                        alive, total, perSec, preset and preset.name or "?", want == 0 and " (auto)" or "", Farm.Kills, pct,
                         lastReason and (" | " .. lastReason) or ""))
                 else
                     Farm.SetStatsText(Cfg.AutoFarm and "Not in a mission" or "Off")
