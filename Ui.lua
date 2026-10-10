@@ -1872,14 +1872,29 @@ do
     --  • Nape ยิงทุกรอบ ไม่ติดคูลดาวน์ (ไททันต้องโดนท้ายทอยถึงจะตาย)
     --  • ส่วนอื่น (Eyes / แขน / ขา) ยิงครบทุกส่วนทีเดียว แล้วพักตามไททันแต่ละตัว Farm.PartCooldown วินาที
     --    พ้นเวลาแล้วค่อยยิงทุกส่วนอีกรอบ (ปิด Hit All Parts = Nape อย่างเดียวเหมือนเดิม)
-    local PartStamp = setmetatable({}, { __mode = "k" }) -- ไททัน -> เวลาที่ยิงส่วนอื่นครั้งล่าสุด
+    -- คูลดาวน์ "ต่อชิ้นส่วน" (ไม่ใช่ต่อไททัน): ส่วนไหนเพิ่งโดนฟัน ข้ามส่วนนั้น ส่วนอื่นที่ยังไม่โดนฟันต่อได้
+    -- รู้ว่า "เพิ่งโดน" จาก 2 ทาง: (1) เราเพิ่งยิงส่วนนั้นเอง (2) เห็นเอฟเฟกต์ Hit / Blood โผล่ใต้ชิ้นส่วนนั้น
+    --   (จากที่ดักได้: โดนฟันแล้วจะมี Hit.Main ประมาณ 1.5 วิ และ Blood.Main ประมาณ 2 วิ ใต้ Hitboxes.Hit.<ชิ้นส่วน>)
+    -- Nape ไม่เคยถูกข้าม (ยิงทุกรอบ)
+    local PartHitAt = setmetatable({}, { __mode = "k" }) -- ชิ้นส่วน -> เวลาที่โดนล่าสุด
+    local function RecentlyHit(part)
+        local now = os.clock()
+        if part:FindFirstChild("Hit") or part:FindFirstChild("Blood") then PartHitAt[part] = now end
+        local t = PartHitAt[part]
+        return t ~= nil and now - t < Farm.PartCooldown
+    end
     local function PartsFor(e)
         if Cfg.HitAllParts then
-            local last = PartStamp[e.titan]
-            if not last or os.clock() - last >= Farm.PartCooldown then
-                local parts = HitParts(e.titan)
-                if #parts > 1 then return parts, true end
+            local parts, others = {}, 0
+            for _, part in ipairs(HitParts(e.titan)) do
+                if part == e.nape then
+                    parts[#parts + 1] = part
+                elseif not RecentlyHit(part) then
+                    parts[#parts + 1] = part
+                    others += 1
+                end
             end
+            if others > 0 then return parts, true end
         end
         return { e.nape }, false
     end
@@ -1892,7 +1907,12 @@ do
             if regs + 1 > budget then return nil end
             parts, withOthers = { e.nape }, false
         end
-        if withOthers then PartStamp[e.titan] = os.clock() end -- เริ่มนับคูลดาวน์ของส่วนอื่น
+        if withOthers then -- เริ่มนับคูลดาวน์ของชิ้นส่วนที่ยิงไป
+            local now = os.clock()
+            for _, part in ipairs(parts) do
+                if part ~= e.nape then PartHitAt[part] = now end
+            end
+        end
         return parts
     end
 
@@ -1984,6 +2004,14 @@ do
         end
 
         if Cfg.NoClip and not Farm.NoClipConn then Farm.UpdateNoClip() end
+
+        -- Auto Refills กำลังพาตัวไปที่จุด Refill: หยุดตามไททันชั่วคราว
+        -- (ไม่งั้นลูปนี้จะดึงตัวกลับขึ้นไปเหนือหัวไททันทุกเฟรม และ Refill จะยิงจากที่ไกลจนเซิร์ฟเวอร์ไม่ยอม)
+        if os.clock() < (Farm.MovePauseUntil or 0) then
+            if bv then bv.Velocity = Vector3.zero end
+            return
+        end
+
         if not IsAlive(target) then target = PickBest(root.Position) or PickNearest(root.Position) end
 
         if not (bv and bv.Parent == root) then
@@ -2079,7 +2107,7 @@ do
     -- ───── วิธียิงหลายชิ้นส่วน (ให้ Farm.TestParts() ทดสอบแล้วเลือกให้ หรือตั้งเอง) ─────
     Farm.PartMode = "ByTitan"  -- "ByTitan" = ไททันทีละตัว ครบทุกส่วน | "ByPart" = รอบละชิ้นส่วน (ทุกตัวโดนส่วนเดียวกันก่อน แล้วพัก PartGap)
     Farm.PartGap = 0.03        -- (เฉพาะ ByPart) พักระหว่างรอบชิ้นส่วน (วินาที)
-    Farm.PartCooldown = 7      -- Eyes/แขน/ขา ของไททันแต่ละตัว ยิงซ้ำได้ทุกกี่วินาที (Nape ไม่ติดคูลดาวน์ ยิงทุกรอบ)
+    Farm.PartCooldown = 7      -- แต่ละชิ้นส่วน (Eyes/แขน/ขา) ของไททันแต่ละตัว ยิงซ้ำได้ทุกกี่วินาที (Nape ไม่ติดคูลดาวน์ ยิงทุกรอบ)
     Farm.NapeFirst = false     -- true = ยิง Nape ก่อนแล้วค่อยส่วนอื่น | false = Nape ท้ายสุด
     local function PostRemote()
         local a = game:GetService("ReplicatedStorage"):FindFirstChild("Assets")
@@ -2921,8 +2949,9 @@ end
 -- ไม่ใช้ได้ในหน้าเมนู / ล็อบบี้
 ---------------------------------------------------------
 do
-    local CHECK_INTERVAL = 0.5
-    local CONFIRM_TIME = 1.5
+    local CHECK_INTERVAL = 0.1   -- เช็ค HUD ถี่ขึ้น เพื่อไปทันทีที่หมด
+    local CONFIRM_TIME = 0       -- ไม่รอยืนยัน: หมดปุ๊บไปปั๊บ (ตั้งเป็น 0.3-0.5 ถ้าอ่าน HUD พลาดแล้วบินไปเปล่า ๆ)
+    Farm.RefillSpeed = 1000      -- ความเร็วตอนบินไป Refill และบินกลับ (studs/วินาที)
     local BASE_COOLDOWN = 8
     local MAX_COOLDOWN = 60
     local VERIFY_WAIT = 2.5
@@ -3100,6 +3129,89 @@ do
         return "HUD not readable (blades hidden / spear counter not found)"
     end
 
+    -- บินไปยังจุดหนึ่งด้วยความเร็ว Tween Speed ของ Auto Farm (ทีละเฟรม ไม่วาปทันที) คืน true ถ้าถึง
+    local RunService = game:GetService("RunService")
+    local ARRIVE_DIST = 8
+    local function TravelTo(pos, speedOverride)
+        local speed = math.max(speedOverride or Farm.FlySpeed or 600, 200)
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return false end
+        local maxTime = math.clamp((pos - root.Position).Magnitude / speed + 3, 3, 20)
+        local t0 = os.clock()
+        while Alive() and os.clock() - t0 < maxTime do
+            local c = LocalPlayer.Character
+            root = c and c:FindFirstChild("HumanoidRootPart")
+            if not root then return false end
+            Farm.MovePauseUntil = os.clock() + 20 -- ต่ออายุตลอดเวลาที่บิน
+            local delta = pos - root.Position
+            local dist = delta.Magnitude
+            if dist <= ARRIVE_DIST then return true end
+            local dt = RunService.Heartbeat:Wait()
+            local step = speed * math.min(dt, 0.1)
+            local newPos = (dist <= step) and pos or (root.Position + delta.Unit * step)
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.CFrame = CFrame.new(newPos) * root.CFrame.Rotation
+        end
+        return false
+    end
+
+    -- ทำ Refill หนึ่งรอบ คืน true = ของกลับมา | false = ไม่กลับ | nil = หาจุด Refill ไม่เจอ
+    --  • Auto Farm เปิดอยู่: ตัวละครลอยอยู่เหนือหัวไททันสูงมาก (Fly Height) ซึ่งไกลจากจุด Refill
+    --    จึงหยุด Auto Farm ชั่วคราว > บินไปที่จุด Refill > ยิง > ปล่อยให้ Auto Farm บินกลับไปหาไททันเอง
+    --  • Auto Farm ปิดอยู่: ยิงจากตำแหน่งปัจจุบัน ไม่ขยับตัว
+    local function DoRefill(kind)
+        local target = ResolveRefill()
+        if not target then return nil end
+        local stationPos = PosOf(target)
+        local travelled = false
+        local okRun, result = pcall(function()
+            local originPos
+            if Cfg.AutoFarm and stationPos then
+                travelled = true
+                do
+                    local c0 = LocalPlayer.Character
+                    local r0 = c0 and c0:FindFirstChild("HumanoidRootPart")
+                    originPos = r0 and r0.Position
+                end
+                Farm.PauseUntil = os.clock() + 25      -- หยุดฟันชั่วคราว (ใช้กลไกเดียวกับ Auto Reload)
+                Farm.MovePauseUntil = os.clock() + 25  -- หยุดบินตามไททันชั่วคราว
+                Status("Flying to the refill station...")
+                local arrived = TravelTo(stationPos + Vector3.new(0, 3, 0), Farm.RefillSpeed)
+                if not arrived then
+                    warn("[SmoothHub] Auto Refills: บินไปจุด Refill ไม่ถึง (ยังจะลองยิงอยู่)")
+                end
+                task.wait(0.1) -- ให้เซิร์ฟเวอร์เห็นตำแหน่งใหม่ (สั้นที่สุด)
+            end
+            Status("Refilling " .. kind .. "...")
+            local ok, err = FireRefill(target)
+            local firedAt = os.clock()
+            if Farm.Debug then print("[SmoothHub] Auto Refills:", kind, ok, err, target:GetFullName()) end
+            -- ยิงเสร็จบินกลับทันที (ความเร็วเท่ากัน) ไม่ต้องรอผลก่อน
+            if travelled and originPos then
+                Status("Flying back...")
+                TravelTo(originPos, Farm.RefillSpeed)
+            end
+            if travelled then
+                Farm.PauseUntil = 0
+                Farm.MovePauseUntil = 0
+            end
+            if kind == "manual" then return true end
+            local remain = VERIFY_WAIT - (os.clock() - firedAt)
+            if remain > 0 then task.wait(remain) end
+            return IsRestored(kind)
+        end)
+        if travelled then
+            Farm.PauseUntil = 0
+            Farm.MovePauseUntil = 0
+        end
+        if not okRun then
+            warn("[SmoothHub] Auto Refills error:", result)
+            return false
+        end
+        return result and true or false
+    end
+
     -- ───── ไว้ทดสอบจาก executor ─────
     -- _G.SmoothHubFarm.RefillDebug() = พิมพ์ค่าที่อ่านได้ + Refill ที่หาเจอ (ไม่ยิง)
     -- _G.SmoothHubFarm.RefillNow()   = ยิง Refill ทันที 1 ครั้ง (ไม่สนว่าหมดหรือยัง) แล้วพิมพ์ผล
@@ -3115,14 +3227,13 @@ do
     end
 
     function Farm.RefillNow()
-        local target = ResolveRefill()
-        if not target then
+        local result = DoRefill("manual")
+        if result == nil then
             warn("[SmoothHub] RefillNow: หา Refill ไม่เจอ (PlaceId " .. tostring(game.PlaceId) .. ")")
             return false
         end
-        local ok, err = FireRefill(target)
-        print("[SmoothHub] RefillNow ->", target:GetFullName(), ok, err)
-        return ok
+        print("[SmoothHub] RefillNow: ยิงแล้ว")
+        return true
     end
 
     task.spawn(function()
@@ -3156,26 +3267,19 @@ do
                         else
                             busy = true
                             task.spawn(function()
-                                local target = ResolveRefill()
-                                if not target then
+                                local restored = DoRefill(kind)
+                                if restored == nil then
                                     Status("Refill station not found on this map")
                                     warn("[SmoothHub] Auto Refills: หา Refill ของด่านนี้ไม่เจอ (PlaceId " .. tostring(game.PlaceId) .. ")")
                                     cooldown = math.min(cooldown * 2, MAX_COOLDOWN)
+                                elseif restored then
+                                    cooldown = BASE_COOLDOWN
+                                    Status("Refilled " .. kind)
                                 else
-                                    Status("Refilling " .. kind .. "...")
-                                    local ok, err = FireRefill(target)
-                                    if Farm.Debug then print("[SmoothHub] Auto Refills:", kind, ok, err, target:GetFullName()) end
-                                    task.wait(VERIFY_WAIT)
-                                    if IsRestored(kind) then
-                                        cooldown = BASE_COOLDOWN
-                                        Status("Refilled " .. kind)
-                                    else
-                                        -- ยิงแล้วไม่กลับ = เซิร์ฟเวอร์ไม่ยอม (เช่นอยู่ไกลจากจุด Refill) -> รอนานขึ้นเรื่อย ๆ
-                                        cooldown = math.min(cooldown * 2, MAX_COOLDOWN)
-                                        Status(("Refill sent but %s not restored (try again in %ds)"):format(kind, cooldown))
-                                        warn(("[SmoothHub] Auto Refills: ยิงแล้ว %s ยังไม่กลับ (อาจต้องอยู่ใกล้จุด Refill) รอ %ds ก่อนลองใหม่ | target: %s")
-                                            :format(kind, cooldown, target:GetFullName()))
-                                    end
+                                    -- ยิงแล้วไม่กลับ = เซิร์ฟเวอร์ไม่ยอม -> รอนานขึ้นเรื่อย ๆ
+                                    cooldown = math.min(cooldown * 2, MAX_COOLDOWN)
+                                    Status(("Refill sent but %s not restored (try again in %ds)"):format(kind, cooldown))
+                                    warn(("[SmoothHub] Auto Refills: ยิงแล้ว %s ยังไม่กลับ รอ %ds ก่อนลองใหม่"):format(kind, cooldown))
                                 end
                                 nextAllowedAt = os.clock() + cooldown
                                 lowSince = nil
