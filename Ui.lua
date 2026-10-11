@@ -62,9 +62,11 @@ local Cfg = {
     SafeTime = 32,                 -- Safe Time (วินาที)
     FailSafeAt = 20,               -- Fail Safe At
     AutoFailSafe = false,          -- Auto Fail Safe
+    Streak = 0,                    -- Current Streak: ชนะติดกันกี่ด่านตอน Auto Farm ทำงาน (ตายแล้วรีเซ็ต / Fail Safe แพ้แล้วรีเซ็ต)
     NoClip = true,                 -- No Clip: ทะลุกำแพง/ไททันตอน Auto Farm ทำงาน
     HitAllParts = true,            -- Hit All Parts: ฟันทุกชิ้นส่วนของไททัน (Eyes / แขน / ขา / Nape) ไม่ใช่แค่ Nape
     FlySpeed = 600,                -- Tween Speed: ความเร็วที่ Auto Farm บินไปหาไททัน (studs/วินาที)
+    PartCooldown = 7,              -- Part Cooldown: แต่ละชิ้นส่วน (Eyes/แขน/ขา) ยิงซ้ำได้ทุกกี่วินาที (0 = ยิงทุกส่วนทุกครั้งที่ฟัน)
     FlyHeight = 150,               -- Fly Height: ลอยสูงเหนือยอดหัวไททันกี่ studs (150 - 2000)
     AttackSpeed = 0,               -- Attack Speed: 0 = Auto, 1 = Safe, 2 = Fast, 3 = Turbo, 4 = Max
     -- Auto Farm > Game Options
@@ -79,8 +81,9 @@ local FARM_RANGES = {
     SafeTime = { 0, 100 },
     FailSafeAt = { 0, 100 },
     FlySpeed = { 100, 2000 },
+    PartCooldown = { 0, 10 },
     FlyHeight = { 150, 2000 },
-    AttackSpeed = { 0, 4 },
+    AttackSpeed = { 0, 5 },
     RetryAmount = { 1, 50 },
 }
 
@@ -145,6 +148,9 @@ local function ApplyCfgData(data)
     end
     if type(data.RetryDone) == "number" and data.RetryDone == data.RetryDone and data.RetryDone >= 0 then
         Cfg.RetryDone = math.floor(data.RetryDone)
+    end
+    if type(data.Streak) == "number" and data.Streak == data.Streak and data.Streak >= 0 then
+        Cfg.Streak = math.floor(data.Streak)
     end
     for key, range in pairs(FARM_RANGES) do
         if type(data[key]) == "number" and data[key] == data[key] then
@@ -878,9 +884,20 @@ local App = Cascade.New({
 })
 AppRef = App
 
+-- 📱 จอเล็ก (มือถือ): ย่อหน้าต่างให้พอดีจอ (ปกติ 850x530 ใหญ่เกินจอมือถือ)
+local WindowSize = UDim2.fromOffset(850, 530)
+pcall(function()
+    local cam = workspace.CurrentCamera
+    if cam then
+        local vp = cam.ViewportSize
+        WindowSize = UDim2.fromOffset(math.clamp(vp.X - 30, 320, 850), math.clamp(vp.Y - 30, 240, 530))
+    end
+end)
+
 local Window = App:Window({
     Title = "Attack on Titan Revolution",
     Subtitle = "Smooth Hub",
+    Size = WindowSize,
     Resizable = true,
     Draggable = true,
     UIBlur = false
@@ -1601,9 +1618,7 @@ _G.SmoothHubFarm = Farm -- เรียกจาก executor ได้ เช่
 -- Farm.OnAutoRefills(on)                        -- Auto Refills: ทำจริงแล้ว ดูส่วน "🔧 Auto Refills" ด้านล่าง
 function Farm.OnDamageMultiplier(on) end         -- Damage Multiplier (x10)
 -- Farm.OnSafeTime(seconds)                    -- Safe Time: ทำจริงแล้ว ดู Farm.ApplySafeTime ด้านล่าง (อ่านค่าจาก Cfg.SafeTime ตอนทำงาน)
-function Farm.OnFailSafeAt(value) end            -- Fail Safe At
-function Farm.OnAutoFailSafe(on) end             -- Auto Fail Safe
-function Farm.RefreshStreak() end                -- ปุ่ม Refresh ของ Current Streak (ใส่โค้ดอ่านค่าแล้วเรียก Farm.SetStreak(n))
+-- Farm.OnFailSafeAt / OnAutoFailSafe / RefreshStreak: ทำจริงแล้ว ดูส่วน "🛟 Fail Safe" ด้านล่าง (อ่านค่าจาก Cfg ตอนทำงาน)
 
 -- ───── Game Options ─────
 -- Farm.OnAutoRetry(on) / Farm.RefreshRetry()    -- Auto Retry: ทำจริงแล้ว ดูส่วน "🔁 Auto Retry" ด้านล่าง
@@ -1677,7 +1692,7 @@ do
     -- ───── Main ─────
     AddFarmToggle(MainForm, "Auto Farm", "Automatically completes missions.", "AutoFarm", "OnAutoFarm")
     AddFarmToggle(MainForm, "No Clip", "Pass through walls and titans while Auto Farm is on.", "NoClip", "OnNoClip")
-    AddFarmToggle(MainForm, "Hit All Parts", "Also hits Eyes, Arms and Legs of each titan (then a 7s cooldown). The Nape is hit every swing with no cooldown.", "HitAllParts", "OnHitAllParts")
+    AddFarmToggle(MainForm, "Hit All Parts", "Also hits Eyes, Arms and Legs of each titan, then waits for Part Cooldown (below). The Nape is hit every swing.", "HitAllParts", "OnHitAllParts")
     AddFarmSlider(MainForm, function(v) return "Tween Speed ( " .. v .. " )" end,
         "How fast Auto Farm flies to the titans (studs per second).", "FlySpeed", "OnFlySpeed")
     AddFarmSlider(MainForm, function(v) return "Fly Height ( " .. v .. " )" end,
@@ -1685,6 +1700,8 @@ do
     local ATTACK_SPEED_NAMES = { [0] = "Auto", "Safe", "Fast", "Turbo", "Max" }
     AddFarmSlider(MainForm, function(v) return "Attack Speed ( " .. tostring(ATTACK_SPEED_NAMES[v] or v) .. " )" end,
         "Auto = starts at Max and slows down by itself if hits stop landing. 1 Safe ... 4 Max.", "AttackSpeed", "OnAttackSpeed")
+    AddFarmSlider(MainForm, function(v) return "Part Cooldown ( " .. v .. "s )" end,
+        "How often Eyes / Arms / Legs are hit again. 0 = every swing (damage on every part). Watch the hit % in Farm Stats.", "PartCooldown", "OnPartCooldown")
     AddFarmToggle(MainForm, "Auto Reload", "Automatically reloads your blades when depleted.", "AutoReload", "OnAutoReload")
     AddFarmToggle(MainForm, "Auto Refills", "Refill at the map's refill station when your blades / thunder spears run out.", "AutoRefills", "OnAutoRefills")
     do -- แถวบอกสถานะของ Auto Refills (โชว์ค่าที่อ่านได้จาก HUD จะได้รู้ว่ามันเห็นอะไร)
@@ -1727,9 +1744,21 @@ do
         end
     end
     AddFarmSlider(MainForm, function(v) return "Fail Safe At [ " .. v .. " ]" end,
-        "Adjust the fail safe.", "FailSafeAt", "OnFailSafeAt")
+        "Lose on purpose after this many wins in a row. 0 = never.", "FailSafeAt", "OnFailSafeAt")
     Farm.SetStreak = AddCounterRow(MainForm, function(n) return "Current Streak ( " .. tostring(n) .. " )" end, "RefreshStreak")
-    AddFarmToggle(MainForm, "Auto Fail Safe", "Automatically loses when the deadline is reached.", "AutoFailSafe", "OnAutoFailSafe")
+    AddFarmToggle(MainForm, "Auto Fail Safe", "When the streak is reached, fly to a titan and let it kill you.", "AutoFailSafe", "OnAutoFailSafe")
+    do -- แถวบอกสถานะของ Fail Safe
+        local statusRow = MainForm:Row()
+        statusRow:Left():TitleStack({ Title = "Fail Safe Status", Subtitle = "Current streak and what Fail Safe is doing." })
+        local statusLabel = statusRow:Right():Label({ Text = "Off" })
+        local lastText = nil
+        function Farm.SetFailSafeStatus(text)
+            text = tostring(text)
+            if text == lastText then return end
+            lastText = text
+            pcall(function() statusLabel.Text = text end)
+        end
+    end
 
     -- ───── Game Options ─────
     local OptionsSection = FarmTab:PageSection({
@@ -1792,7 +1821,7 @@ do
     end
     function Farm.UpdateNoClip()
         Farm.StopNoClip()
-        if not (Cfg.AutoFarm and Cfg.NoClip) then return end
+        if not (Cfg.AutoFarm and Cfg.NoClip and not Farm.FailSafeActive) then return end
         Farm.NoClipConn = RunService.Stepped:Connect(function()
             local char = LocalPlayer.Character
             if not char then return end
@@ -1917,7 +1946,23 @@ do
     end
 
     -- จุดที่จะไปอยู่ (คืน nil ถ้าหาไม่เจอ)
+    -- Fail Safe: จุดยืนข้างเท้าไททัน (ยิงเรย์ลงหาพื้น) ให้ไททันจับ/เหยียบได้
+    local function BaitPosition(titan)
+        local root = titan:FindFirstChild("HumanoidRootPart")
+        if not root then return nil end
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local ignore = { LocalPlayer.Character }
+        local folder = TitansFolder()
+        if folder then ignore[#ignore + 1] = folder end
+        params.FilterDescendantsInstances = ignore
+        local hit = workspace:Raycast(root.Position, Vector3.new(0, -600, 0), params)
+        local y = hit and hit.Position.Y or (root.Position.Y - 20)
+        return Vector3.new(root.Position.X, y + 3, root.Position.Z)
+    end
+
     local function GoalFor(titan)
+        if Farm.FailSafeActive then return BaitPosition(titan) end
         if Farm.TargetMode == "Nape" then
             local nape = FindNape(titan)
             if nape then
@@ -2003,7 +2048,7 @@ do
             return
         end
 
-        if Cfg.NoClip and not Farm.NoClipConn then Farm.UpdateNoClip() end
+        if Cfg.NoClip and not Farm.FailSafeActive and not Farm.NoClipConn then Farm.UpdateNoClip() end
 
         -- Auto Refills กำลังพาตัวไปที่จุด Refill: หยุดตามไททันชั่วคราว
         -- (ไม่งั้นลูปนี้จะดึงตัวกลับขึ้นไปเหนือหัวไททันทุกเฟรม และ Refill จะยิงจากที่ไกลจนเซิร์ฟเวอร์ไม่ยอม)
@@ -2108,7 +2153,8 @@ do
     Farm.PartMode = "ByTitan"  -- "ByTitan" = ไททันทีละตัว ครบทุกส่วน | "ByPart" = รอบละชิ้นส่วน (ทุกตัวโดนส่วนเดียวกันก่อน แล้วพัก PartGap)
     Farm.PartGap = 0.03        -- (เฉพาะ ByPart) พักระหว่างรอบชิ้นส่วน (วินาที)
     Farm.PartHits = 1          -- ฟันแต่ละชิ้นส่วน (Eyes/แขน/ขา) กี่ครั้งต่อรอบ (ไททันธรรมดา 1 ครั้งก็ขาดแล้ว เพิ่มเป็น 2-3 ถ้าไททันโหด)
-    Farm.PartCooldown = 7      -- แต่ละชิ้นส่วน (Eyes/แขน/ขา) ของไททันแต่ละตัว ยิงซ้ำได้ทุกกี่วินาที (Nape ไม่ติดคูลดาวน์ ยิงทุกรอบ)
+    Farm.PartCooldown = Cfg.PartCooldown -- แต่ละชิ้นส่วน (Eyes/แขน/ขา) ของไททันแต่ละตัว ยิงซ้ำได้ทุกกี่วินาที (Nape ไม่ติดคูลดาวน์ ยิงทุกรอบ) ปรับที่สไลเดอร์ Part Cooldown
+    function Farm.OnPartCooldown(v) Farm.PartCooldown = v end
     Farm.NapeFirst = false     -- true = ยิง Nape ก่อนแล้วค่อยส่วนอื่น | false = Nape ท้ายสุด
     local function PostRemote()
         local a = game:GetService("ReplicatedStorage"):FindFirstChild("Assets")
@@ -2179,12 +2225,17 @@ do
         { name = "Fast",  windup = 0.20, release = 0.30, gap = 0.10, perTarget = false, maxTargets = 100 },
         { name = "Turbo", windup = 0.10, release = 0.15, gap = 0.02, perTarget = false, maxTargets = 60 },
         { name = "Max",   windup = 0.04, release = 0.06, gap = 0,    perTarget = false, maxTargets = 40 },
+        { name = "Ultra", windup = 0,    release = 0.02, gap = 0,    perTarget = false, maxTargets = 100, burst = true }, -- ทดลอง: ไม่รอหลัง Slash true ยิง Register ทันที
     }
-    Farm.Level = #Farm.Presets -- ระดับที่ใช้อยู่ (โหมด Auto ปรับให้เอง)
+    Farm.AutoMinLevel = 3 -- (Auto จะเริ่มที่ Ultra แล้วลดเอง)
+    Farm.AutoMinLevel = 3 -- โหมด Auto ลดความเร็วลงได้ไม่ต่ำกว่าระดับนี้ (3=Turbo) กันตกไป Safe/Fast แล้วช้าค้าง ตั้ง 1 ถ้าอยากให้ลดได้สุด
+    Farm.AutoMaxLevel = 4 -- Auto เร่งได้สูงสุดแค่ Max (Ultra ต้องเลือกเองที่สไลเดอร์ 5)
+    Farm.Level = Farm.AutoMaxLevel -- ระดับที่ใช้อยู่ (โหมด Auto ปรับให้เอง)
     function Farm.OnAttackSpeed(v)
-        if v == 0 then Farm.Level = #Farm.Presets end -- เปลี่ยนเป็น Auto = เริ่มจาก Max ใหม่
+        if v == 0 then Farm.Level = Farm.AutoMaxLevel end -- เปลี่ยนเป็น Auto = เริ่มจาก Max ใหม่
     end
 
+    Farm.UltraBurst = 2 -- Ultra: กี่รอบ Register ต่อ Slash 1 ครั้ง (เพิ่มได้ถ้าไม่โดนเตะ)
     local function Slash(post, list, p)
         -- งบ Register ต่อการฟัน (ใช้เมื่อเปิด Hit All Parts) ไททันตัวไหนงบไม่พอให้ครบทุกส่วนจะยิงแค่ Nape
         -- (Nape ยิงทุกรอบเสมอ ส่วนอื่นติดคูลดาวน์ Farm.PartCooldown ต่อไททัน 1 ตัว)
@@ -2230,15 +2281,22 @@ do
                 if round < rounds and Farm.PartGap > 0 then task.wait(Farm.PartGap) end
             end
         else
-            for _, e in ipairs(list) do
-                if e.titan.Parent and e.nape.Parent then
-                    local parts = PlanFor(e, regs, budget)
-                    if not parts then break end
-                    regs += #parts
-                    for _, part in ipairs(parts) do
-                        if part.Parent then Farm.Reg(post, e, part) end
+            -- burst: เปิด Slash ค้างไว้ แล้วยิงรอบ Register ซ้ำหลายรอบก่อนปิด (Ultra) ลดจำนวนครั้งที่ต้อง true/false
+            for pass = 1, (p.burst and Farm.UltraBurst or 1) do
+                if pass > 1 then
+                    task.wait()
+                    regs = 0
+                end
+                for _, e in ipairs(list) do
+                    if e.titan.Parent and e.nape.Parent then
+                        local parts = PlanFor(e, regs, budget)
+                        if not parts then break end
+                        regs += #parts
+                        for _, part in ipairs(parts) do
+                            if part.Parent then Farm.Reg(post, e, part) end
+                        end
+                        if p.perTarget then task.wait() end
                     end
-                    if p.perTarget then task.wait() end
                 end
             end
         end
@@ -2447,6 +2505,37 @@ do
         end)
     end
 
+    -- _G.SmoothHubFarm.TitanReport() = พิมพ์ (และคัดลอก) สถานะไททันที่ยังไม่ตายทุกตัว ไว้ส่งให้ดูตอนที่ฟันไม่ติด
+    function Farm.TitanReport()
+        local lines = {}
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local folder = TitansFolder()
+        lines[#lines + 1] = ("=== Titan report | spears HUD=%s counted=%s weapon=%s | SafeTime=%s reserve=%s"):format(
+            tostring(Farm.ReadSpears and Farm.ReadSpears()), tostring(Farm.SpearsLeft), tostring(Farm.WeaponMode),
+            tostring(Cfg.SafeTime), tostring(Farm.Reserve and Farm.Reserve.Name))
+        local count = 0
+        for _, t in ipairs(folder and folder:GetChildren() or {}) do
+            if t:IsA("Model") and IsAlive(t) then
+                count += 1
+                if count <= 60 then
+                    local nape = FindNape(t)
+                    local hum = t:FindFirstChildOfClass("Humanoid")
+                    local okP, pivot = pcall(function() return t:GetPivot().Position end)
+                    local pos = (nape and nape.Position) or (okP and pivot) or nil
+                    local dist = (pos and root) and math.floor((pos - root.Position).Magnitude) or -1
+                    lines[#lines + 1] = ("%s | nape=%s | hp=%s | dist=%d | parts=%d"):format(
+                        t.Name, tostring(nape ~= nil), hum and tostring(math.floor(hum.Health)) or "nil", dist, #t:GetDescendants())
+                end
+            end
+        end
+        lines[#lines + 1] = ("alive titans: %d | last spear: %s | reason: %s"):format(count, tostring(Farm.LastSpear), tostring(Farm.SpearReason))
+        local text = table.concat(lines, "\n")
+        print(text)
+        pcall(function() setclipboard(text) end)
+        return text
+    end
+
     ---------------------------------------------------------
     -- ⏱️ Safe Time: ด่านต้องไม่จบเร็วกว่าที่คนจริงทำได้
     -- นับจากตอนเห็นไททันตัวแรกของด่าน ก่อนครบเวลาที่ตั้งไว้จะ "เก็บไททันไว้ 1 ตัว" ไม่ฟัน
@@ -2543,11 +2632,354 @@ do
         return hit
     end
 
+    ---------------------------------------------------------
+    -- ⚡ โหมดหอกสายฟ้า (Thunder Spears)
+    -- ลำดับรีโมตที่ดักได้: GET:InvokeServer("Spears","S_Fire","8") -> POST:FireServer("Spears","S_Explode",<ตำแหน่ง>,<เวลา>)
+    -- ทดสอบแล้ว: ระเบิดที่ตำแหน่ง Nape ไททันตายจากระยะ 85 และ 138 studs (1 ลูก = 1 ตัว)
+    -- Farm.WeaponMode = "Auto" (ถือหอกอยู่ = ใช้หอก) | "Blades" | "Spears"
+    ---------------------------------------------------------
+    Farm.WeaponMode = "Blades" -- ค่าเริ่มต้น: ใช้ดาบเหมือนไฟล์เก่า (ตั้ง "Auto" ให้ตรวจเองว่าถือหอก หรือ "Spears" บังคับหอก)
+    Farm.SpearArg = nil        -- ตัวที่ 3 ของ S_Fire = จำนวนหอกที่เหลือก่อนยิง (nil = อ่านจาก HUD อัตโนมัติ)
+    Farm.SpearsPerVolley = 3   -- ยิงกี่ลูกต่อรอบ (1 ลูก = 1 ไททัน)
+    Farm.SpearGap = 0.3        -- พักระหว่างลูก (วินาที)
+    Farm.SpearDelay = 0.8      -- พักระหว่างรอบ (วินาที)
+    Farm.SpearKills = 0
+    -- HUD มีตัวเลขหอก (เช่น "12 / 12") ขึ้นเฉพาะตอนถือหอก (แถบดาบยังโชว์ค้างอยู่ได้) ใช้ตัวเลขนี้เป็นหลัก
+    -- ถ้าอ่านไม่ได้ (เช่นบังคับ WeaponMode = "Spears") ใช้ตัวที่นับเอง: ยิงสำเร็จ -1 / Refill แล้วกลับเป็นเต็ม
+    -- ผลทดสอบจริง: S_Fire ตอบ true ทุกครั้ง และ S_Explode หลังยิง ~1.2 วินาทีฆ่าไททันได้ทุกลูก
+    Farm.SpearMax = 8          -- หอกเต็มกี่ลูก (ใช้ตอนอ่าน HUD ไม่ได้) | อ่าน HUD ได้เมื่อไหร่จะเรียนรู้ค่าจริงเอง (เช่น "1 / 8")
+    Farm.SpearArgCap = 8       -- ตัวที่ 3 ของ S_Fire ที่ดักได้เป็น "8" ตอนหอก 12/12 = ส่ง min(หอกที่เหลือ, ค่านี้)
+    Farm.LastSpearAt = 0       -- เวลาที่ยิงหอกล่าสุด
+    Farm.SpearsLeft = nil      -- หอกที่เหลือ (นับเอง) nil = ยังไม่รู้ (เริ่มที่เต็ม)
+    Farm.SpearFlight = 1.2     -- รอหลัง S_Fire ก่อนระเบิด (วินาที) + สุ่มเพิ่ม 0 - 0.25
+    Farm.SpearPipeline = false -- true = ยิงหลายลูกก่อนแล้วค่อยระเบิดทีหลัง (เร็วกว่า แต่ยังไม่ยืนยันว่าเซิร์ฟเวอร์รับ)
+    Farm.SpearMiss = 0         -- โดนปฏิเสธติดกันกี่ครั้ง (2 ครั้ง = ถือว่าหอกหมด)
+    -- 🖱️ คลิก/แตะจริงใส่ไททัน (แทนยิงด้วยรีโมต) กันยิงไม่ติด ใช้ได้ทั้งคอมและมือถือ
+    Farm.SpearClickAt = 0      -- ปิดไว้เป็นค่าเริ่มต้น (ตอนเปิดแล้วหอกเหลือ 1 ลูกอาการแปลก) | หอกเหลือ <= ค่านี้ = ใช้คลิกจริง | 99 = ทุกลูก | 2 = เฉพาะเหลือ 1 - 2 ลูก
+    Farm.SpearClickWait = 2    -- รอผลหลังคลิกกี่วินาที (หอกลดลง = ยิงออกแล้ว)
+    Farm.SpearClickTries = 2   -- คลิกซ้ำสูงสุดกี่ครั้งต่อ 1 ไททัน ถ้าหอกไม่ออก
+    Farm.SpearRescue = true    -- หอกที่ยิงด้วยการคลิกหยุดนิ่งแล้วไม่ระเบิด = ส่งคำสั่งระเบิดที่ตำแหน่งหอกให้ (เลียนแบบที่เกมทำตอนชน)
+    Farm.SpearRescued = 0      -- นับว่าช่วยระเบิดไปกี่ครั้ง (ไว้เช็ค)
+    Farm.SpearClickMethod = nil     -- วิธีที่เคยยิงออกจริง: "mouse" | "touch" | "tool" (จำไว้ใช้ก่อนรอบหน้า)
+    Farm.SpearClickBlockedUntil = 0 -- คลิกไม่ออกเลย = พักระบบนี้ไว้ชั่วคราว แล้วใช้รีโมตแบบเดิมแทน
+    -- S_Fire ตอบ nil = เซิร์ฟเวอร์ปฏิเสธ (จาก log จริง: ยิงได้ true ช่วงแรก แล้วตอบ nil ทุกครั้งทั้งที่สคริปต์ยังยิงต่อ)
+    -- ถูกปฏิเสธแต่ HUD ยังเห็นหอกเหลือ = สลับไปคลิกจริงชั่วคราว (เกมจะทำท่าง้างหอกและจัดการสถานะเอง) แล้วลองรีโมตใหม่ทีหลัง
+    Farm.SpearClickOnReject = true  -- false = ปิดระบบสลับนี้
+    Farm.SpearRemoteRetry = 10      -- สลับมาใช้คลิกกี่วินาที ก่อนกลับไปลองรีโมตอีกครั้ง
+    Farm.SpearRejectLimit = 3       -- ถูกปฏิเสธติดกันกี่ครั้ง ถึงจะสลับไปคลิก (ก่อนหน้านั้นรอ 1.5 วิแล้วลองรีโมตใหม่)
+    Farm.SpearRemoteBlockedUntil = 0
+
+    local function HoldingSpears()
+        if Farm.WeaponMode == "Spears" then return true end
+        if Farm.WeaponMode == "Blades" then return false end
+        -- ตัวเลขหอก (เช่น "12 / 12") ขึ้นบน HUD เฉพาะตอนถือหอก
+        -- ใช้แถบดาบตัดสินไม่ได้ เพราะแถบดาบยังโชว์ค้างอยู่ได้แม้ถือหอก
+        return (Farm.ReadSpears and Farm.ReadSpears()) ~= nil
+    end
+
+    -- วิธีกดที่ลองตามลำดับ: คอม = mouse > tool | มือถือ = touch > mouse > tool (วิธีที่เคยสำเร็จขึ้นก่อน)
+    local function ClickMethods()
+        local UIS = game:GetService("UserInputService")
+        local mobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+        local order = mobile and { "touch", "mouse", "tool" } or { "mouse", "tool" }
+        local last = Farm.SpearClickMethod
+        if last then
+            local idx = table.find(order, last)
+            if idx then
+                table.remove(order, idx)
+                table.insert(order, 1, last)
+            end
+        end
+        return order
+    end
+
+    local function PressOnce(method, cx, cy)
+        if method == "mouse" then
+            VirtualInputManager:SendMouseMoveEvent(cx, cy, game)
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+            task.wait(0.05)
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+        elseif method == "touch" then
+            -- แตะกลางจอ (state 0 = เริ่มแตะ, 2 = ปล่อยนิ้ว) บางตัวรันสคริปต์ไม่มีฟังก์ชันนี้ -> error แล้วข้ามไปวิธีถัดไป
+            VirtualInputManager:SendTouchEvent(7, 0, cx, cy)
+            task.wait(0.06)
+            VirtualInputManager:SendTouchEvent(7, 2, cx, cy)
+        elseif method == "tool" then
+            local char = LocalPlayer.Character
+            local tool = char and char:FindFirstChildOfClass("Tool")
+            if not tool then error("no tool equipped") end
+            tool:Activate()
+        end
+    end
+
+    -- กล้องหันไปที่ Nape ของไททัน -> คลิก/แตะกลางจอ (จุดที่กล้องมองอยู่) -> ดูว่าหอกในมือลดลงไหม
+    -- คืนค่า: ยิงออกไหม, ไททันตายไหม
+    local function ClickSpear(e)
+        local cam = workspace.CurrentCamera
+        if not cam then return false, false end
+        local readSpears = Farm.ReadSpears
+        local view = cam.ViewportSize
+        local cx, cy = view.X / 2, view.Y / 2
+        local RS = game:GetService("RunService")
+        local bindName = "SmoothHubSpearAim"
+        local aiming = true
+        pcall(function() RS:UnbindFromRenderStep(bindName) end)
+        RS:BindToRenderStep(bindName, Enum.RenderPriority.Camera.Value + 1, function()
+            local c = workspace.CurrentCamera
+            if aiming and c and e.nape.Parent then
+                c.CFrame = CFrame.lookAt(c.CFrame.Position, e.nape.Position)
+            end
+        end)
+
+        -- ไว้ตามดูหอกที่เพิ่งยิง: โมเดลหอกอยู่ใน Workspace.Unclimbable.Spears และระเบิดโผล่ใน Workspace.Debris
+        local unclimbable = workspace:FindFirstChild("Unclimbable")
+        local spearsFolder = unclimbable and unclimbable:FindFirstChild("Spears")
+        local debris = workspace:FindFirstChild("Debris")
+        local known = {}
+        if spearsFolder then
+            for _, c in ipairs(spearsFolder:GetChildren()) do known[c] = true end
+        end
+        local boomed = false
+        local boomConn = debris and debris.DescendantAdded:Connect(function(d)
+            if d.Name == "Explosion" then boomed = true end
+        end)
+
+        -- โมเดลหอกโผล่ใน Workspace.Unclimbable.Spears = หอกออกจากมือจริง (แม่นกว่า HUD ที่อัปเดตช้า)
+        local modelAdded = false
+        local modelConn = spearsFolder and spearsFolder.ChildAdded:Connect(function() modelAdded = true end)
+
+        local fired, died = false, false
+        pcall(function()
+            task.wait(0.15) -- ให้กล้องหันก่อนกด
+            for _, method in ipairs(ClickMethods()) do
+                local before = readSpears and readSpears()
+                modelAdded = false
+                local okPress = pcall(PressOnce, method, cx, cy)
+                if okPress then
+                    -- รอดูว่าหอกออกไหม (โมเดลหอกโผล่ หรือเลขหอกลดลง) รอนานขึ้นเพราะท่าง้างหอกใช้เวลา ~0.8 วิ และ HUD ช้า
+                    local t0 = os.clock()
+                    while os.clock() - t0 < 2.0 do
+                        task.wait(0.1)
+                        if modelAdded then fired = true break end
+                        local now = readSpears and readSpears()
+                        if before and now and now < before then fired = true break end
+                        if not IsAlive(e.titan) then fired = true break end
+                    end
+                end
+                if fired then
+                    Farm.SpearClickMethod = method
+                    break
+                end
+            end
+            if not fired then return end
+            -- ยิงออกแล้ว: ล็อกกล้องต่อให้หอกพุ่งตรง แล้วรอผล
+            local spearModel
+            if spearsFolder then
+                for _, c in ipairs(spearsFolder:GetChildren()) do
+                    if not known[c] then spearModel = c end
+                end
+            end
+            local rescued, still, lastP = false, 0, nil
+            local t1 = os.clock()
+            while os.clock() - t1 < Farm.SpearClickWait do
+                if not IsAlive(e.titan) then died = true break end
+                if os.clock() - t1 > 0.4 then aiming = false end
+
+                -- หอกหยุดนิ่ง >= 0.4 วิ แต่ยังไม่มีระเบิด = ส่งคำสั่งระเบิดที่ตำแหน่งที่หอกค้างอยู่
+                if Farm.SpearRescue and spearModel and spearModel.Parent and not boomed and not rescued then
+                    local part = spearModel:FindFirstChild("Spear")
+                    if part then
+                        local pos = part.Position
+                        if lastP and (pos - lastP).Magnitude < 1 then still += 0.1 else still = 0 end
+                        lastP = pos
+                        if still >= 0.4 then
+                            local remotes = ReplicatedStorage:FindFirstChild("Assets")
+                            remotes = remotes and remotes:FindFirstChild("Remotes")
+                            local POST = remotes and remotes:FindFirstChild("POST")
+                            if POST then
+                                rescued = true
+                                Farm.SpearRescued += 1
+                                POST:FireServer("Spears", "S_Explode", pos, 0.1 + math.random() * 0.03)
+                            end
+                        end
+                    end
+                end
+                task.wait(0.1)
+            end
+        end)
+        if boomConn then boomConn:Disconnect() end
+        if modelConn then modelConn:Disconnect() end
+        aiming = false
+        pcall(function() RS:UnbindFromRenderStep(bindName) end)
+        if not IsAlive(e.titan) then died = true; fired = true end -- ไททันตาย = หอกออกแน่ (กันเคส HUD อัปเดตช้า)
+        return fired, died
+    end
+
+    -- ยิงด้วยการคลิก/แตะจริง ไททันละ 1 ลูก (สูงสุด SpearsPerVolley ตัวต่อรอบ)
+    local function ClickVolley(list, left, n)
+        local firedAny = false
+        for i = 1, n do
+            local e = list[i]
+            if e and e.titan.Parent and IsAlive(e.titan) and e.nape.Parent then
+                local firedThis = false
+                for try = 1, math.max(1, math.floor(Farm.SpearClickTries)) do
+                    local fired, died = ClickSpear(e)
+                    Farm.LastSpear = ("Click[%s] -> fired=%s died=%s | left=%s try=%d"):format(
+                        tostring(Farm.SpearClickMethod), tostring(fired), tostring(died), tostring(left), try)
+                    if Farm.Debug then print("[SmoothHub] " .. Farm.LastSpear) end
+                    if fired then
+                        firedThis, firedAny = true, true
+                        Farm.SpearMiss = 0
+                        Farm.SpearReason = nil
+                        left = math.max(0, left - 1)
+                        local hudNow = Farm.ReadSpears and Farm.ReadSpears()
+                        Farm.SpearsLeft = math.min(left, hudNow or left)
+                        Farm.LastSpearAt = os.clock()
+                        if died then Farm.SpearKills += 1 end
+                        break
+                    end
+                end
+                if not firedThis then
+                    -- ตัวแรกยังไม่ออกเลย: พักระบบคลิก 60 วินาที ใช้รีโมตแบบเดิมแทน (ไม่ให้แย่กว่าเดิม)
+                    if not firedAny then
+                        Farm.SpearClickBlockedUntil = os.clock() + 60
+                        Farm.SpearReason = "Click/tap did not fire the spear (using remote for 60s)"
+                    end
+                    break
+                end
+                if left <= 0 then break end
+                task.wait(Farm.SpearGap)
+            end
+        end
+        return firedAny
+    end
+
+    local function SpearVolley(root, main)
+        local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Assets")
+        remotes = remotes and remotes:FindFirstChild("Remotes")
+        local GET = remotes and remotes:FindFirstChild("GET")
+        local POST = remotes and remotes:FindFirstChild("POST")
+        if not (GET and POST) then return false end
+
+        local hud = Farm.ReadSpears and Farm.ReadSpears()
+        -- เลขหอกบน HUD ช้ากว่าความจริง 2 - 4 วิ (ยิงลูกสุดท้ายไปแล้ว HUD ยังโชว์ 1 อยู่) จึงใช้ "ตัวนับของเรา" คู่กับ HUD
+        -- HUD เพิ่มขึ้น (หรืออ่านครั้งแรก) = รีฟิลแล้ว ซิงค์ตัวนับตาม HUD | นอกนั้นใช้ค่าที่น้อยกว่าของสองตัว
+        if hud then
+            local prev = Farm.SpearHudPrev
+            if prev == nil or hud > prev then Farm.SpearsLeft = hud end
+            Farm.SpearHudPrev = hud
+        end
+        local left = Farm.SpearsLeft or hud or Farm.SpearMax
+        if hud and hud < left then left = hud end
+        -- ตัวนับบอกหมด แต่ HUD ยังเห็นหอก (HUD ช้า หรือนับพลาด) และผ่านมา >= 3 วิหลังยิงล่าสุด
+        -- = ลองยิงหอก 1 ลูกให้เซิร์ฟเวอร์ตัดสิน: ยอมรับ = ยังมีหอกจริง (ใช้ HUD ต่อ) | ปฏิเสธ = หมดจริง ไปรีฟิล
+        local probing = false
+        if left <= 0 and hud and hud > 0 and os.clock() - (Farm.LastSpearAt or 0) >= 3 then
+            left, probing = hud, true
+        end
+        if left <= 0 then
+            Farm.SpearReason = "Spears empty (waiting for refill)"
+            return false -- หมด: ให้ Auto Refills จัดการ
+        end
+
+        local all = CollectTargets(root, main)
+        local list = all
+        if Farm.ApplySafeTime then list = Farm.ApplySafeTime(all) end -- Safe Time ใช้กับโหมดหอกด้วย
+        if #all == 0 then
+            Farm.SpearReason = "No titan with a nape found in range"
+        elseif #list == 0 then
+            Farm.SpearReason = "Holding last titan (Safe Time)"
+        end
+        local n = math.min(#list, math.max(1, math.floor(Farm.SpearsPerVolley)), left)
+        if probing then n = math.min(n, 1) end
+
+        -- คลิก/แตะจริงใส่ไททัน (อ่านเลขหอกจาก HUD ได้ถึงจะใช้ เพราะต้องรู้ว่าถือหอกอยู่จริง)
+        local remoteBlocked = os.clock() < (Farm.SpearRemoteBlockedUntil or 0)
+        if hud and n > 0 and os.clock() >= (Farm.SpearClickBlockedUntil or 0)
+            and (remoteBlocked or ((Farm.SpearClickAt or 0) > 0 and left <= Farm.SpearClickAt)) then
+            if ClickVolley(list, left, n) then return true end
+            -- คลิกไม่สำเร็จ: ตกลงมาใช้รีโมตแบบเดิมต่อในรอบนี้
+        end
+
+        -- รอให้ครบเวลาลูกหอกบิน แล้วระเบิดที่ตำแหน่ง Nape ตอนนั้น (เวลาตัวที่ 4 ของจริงอยู่ที่ 0.10 - 0.13)
+        local function Explode(e, firedAt)
+            local wait = Farm.SpearFlight + math.random() * 0.25 - (os.clock() - firedAt)
+            if wait > 0 then task.wait(wait) end
+            if e.nape.Parent then
+                POST:FireServer("Spears", "S_Explode", e.nape.Position, 0.1 + math.random() * 0.03)
+            end
+        end
+
+        local fired, flying = 0, {}
+        for i = 1, n do
+            local e = list[i]
+            if e and e.titan.Parent and IsAlive(e.titan) and e.nape.Parent then
+                -- ตัวที่ 3 ของ S_Fire = จำนวนหอกที่เหลือก่อนยิง (ทดสอบแล้วเซิร์ฟเวอร์ไม่เข้มงวดกับเลขนี้)
+                local arg = Farm.SpearArg and tonumber(Farm.SpearArg) or math.min(left, Farm.SpearArgCap)
+                local ok, res = pcall(function() return GET:InvokeServer("Spears", "S_Fire", tostring(arg)) end)
+                Farm.LastSpear = ("S_Fire(%s) -> ok=%s result=%s | left=%s"):format(tostring(arg), tostring(ok), tostring(res), tostring(left))
+                if Farm.Debug then print("[SmoothHub] " .. Farm.LastSpear) end
+                if ok and res ~= nil and res ~= false then -- สำเร็จ = true | nil/false = เซิร์ฟเวอร์ปฏิเสธ
+                    Farm.SpearMiss = 0
+                    Farm.SpearReason = nil
+                    left -= 1
+                    Farm.SpearsLeft = left
+                    fired += 1
+                    local firedAt = os.clock()
+                    Farm.LastSpearAt = firedAt
+                    if Farm.SpearPipeline then
+                        flying[#flying + 1] = { e = e, t = firedAt }
+                        task.wait(Farm.SpearGap)
+                    else
+                        Explode(e, firedAt)
+                        task.wait(Farm.SpearGap)
+                        if not IsAlive(e.titan) then Farm.SpearKills += 1 end
+                    end
+                else
+                    Farm.SpearRejected = (Farm.SpearRejected or 0) + 1
+                    Farm.SpearMiss += 1
+                    Farm.SpearReason = "S_Fire rejected (" .. tostring(res) .. ")"
+                    if probing then
+                        Farm.SpearsLeft = 0
+                        Farm.SpearEmptyAt = os.clock() -- Auto Refills ใช้ตัวนี้ตัดสินว่าหมด (ไม่รอ HUD ที่ช้า)
+                        Farm.SpearMiss = 0
+                        Farm.SpearReason = "Spears empty (confirmed by server) - waiting for refill"
+                    elseif hud and left > 0 and Farm.SpearClickOnReject then
+                        -- นับว่ายังเหลือหอก แต่เซิร์ฟเวอร์ไม่รับ (เช่น หอกลูกก่อนยังบินอยู่/ค้างสถานะ): รอแล้วลองรีโมตใหม่ก่อน
+                        -- ถูกปฏิเสธติดกันครบ SpearRejectLimit ครั้ง ค่อยสลับไปคลิกจริงชั่วคราว
+                        if Farm.SpearMiss >= (Farm.SpearRejectLimit or 3) then
+                            Farm.SpearRemoteBlockedUntil = os.clock() + (Farm.SpearRemoteRetry or 10)
+                            Farm.SpearMiss = 0
+                            Farm.SpearReason = "S_Fire rejected repeatedly - using real click for " .. tostring(Farm.SpearRemoteRetry or 10) .. "s"
+                        else
+                            Farm.SpearReason = "S_Fire rejected - retrying in 1.5s"
+                            task.wait(1.5)
+                        end
+                    elseif Farm.SpearMiss >= 2 then
+                        Farm.SpearsLeft = 0 -- อ่าน HUD ไม่ได้ + ปฏิเสธติดกัน 2 ครั้ง = น่าจะหอกหมด ให้ Auto Refills ทำงาน
+                    end
+                    break
+                end
+            end
+        end
+        for _, f in ipairs(flying) do
+            Explode(f.e, f.t)
+        end
+        if #flying > 0 then
+            task.wait(Farm.SpearGap)
+            for _, f in ipairs(flying) do
+                if not IsAlive(f.e.titan) then Farm.SpearKills += 1 end
+            end
+        end
+        return fired > 0
+    end
+
     task.spawn(function()
         local pending = {}
         local missStreak, hitStreak, lastChange = 0, 0, os.clock()
         local cycles, statsAt, statsCycles = 0, os.clock(), 0
         local lastReason = nil
+        local idleSince, idleWhy, idleLogged = nil, nil, false
         while Alive() do
           local okTick, errTick = pcall(function()
             -- Auto Reload กำลังรีโหลดอยู่: หยุดฟันชั่วคราว (ใบมีดหมดก็ฟันไม่โดนอยู่แล้ว)
@@ -2555,6 +2987,7 @@ do
             if os.clock() < (Farm.PauseUntil or 0) then
                 pending = {}
                 missStreak, hitStreak = 0, 0
+                lastReason = "Refilling/paused"
                 task.wait(0.05)
                 return
             end
@@ -2570,10 +3003,10 @@ do
                     local hit = Judge(g)
                     if want == 0 and g.level == Farm.Level then -- นับเฉพาะรอบที่ฟันด้วยระดับปัจจุบัน
                         if hit then hitStreak += 1 missStreak = 0 else missStreak += 1 hitStreak = 0 end
-                        if missStreak >= 4 and Farm.Level > 1 then
+                        if missStreak >= 4 and Farm.Level > (Farm.AutoMinLevel or 1) then
                             Farm.Level -= 1
                             missStreak, hitStreak, lastChange = 0, 0, now
-                        elseif hitStreak >= 25 and Farm.Level < #Farm.Presets and now - lastChange > 20 then
+                        elseif hitStreak >= 25 and Farm.Level < Farm.AutoMaxLevel and now - lastChange > 20 then
                             Farm.Level += 1
                             missStreak, hitStreak, lastChange = 0, 0, now
                         end
@@ -2585,15 +3018,27 @@ do
             pending = keep
 
             local attacked = false
-            if Cfg.AutoFarm and Farm.Attack and Farm.CanUseHere() then
+            if Cfg.AutoFarm and Farm.Attack and Farm.CanUseHere() and not Farm.FailSafeActive then
                 local char = LocalPlayer.Character
                 local root = char and char:FindFirstChild("HumanoidRootPart")
                 local post = PostRemote()
-                local list = (root and post) and CollectTargets(root, target) or {}
+                local list
+                local spearMode = false
+                if root and HoldingSpears() then
+                    spearMode = true
+                    if SpearVolley(root, target) then
+                        attacked = true
+                        task.wait(Farm.SpearDelay)
+                    end
+                    list = {}
+                else
+                    list = (root and post) and CollectTargets(root, target) or {}
+                end
                 local found = #list
                 list = Farm.ApplySafeTime(list)
                 if not post then lastReason = "POST remote not found"
                 elseif not root then lastReason = "No character"
+                elseif spearMode then lastReason = Farm.SpearReason
                 elseif found == 0 then lastReason = "No hittable titan nearby"
                 elseif #list == 0 then lastReason = "Holding last titan (Safe Time)"
                 else lastReason = nil end
@@ -2613,7 +3058,23 @@ do
             elseif not Cfg.AutoFarm and Farm.SetSafeStatus then
                 Farm.SetSafeStatus("Auto Farm is off")
             end
-            if not attacked then task.wait(0.1) end
+            if attacked then
+                idleSince, idleWhy = nil, nil
+            else
+                -- บันทึกสาเหตุที่ไม่ตี: ถ้านิ่งเกิน 0.7 วิ พิมพ์ลง Console (F9) 1 บรรทัดต่อช่วงที่นิ่ง
+                idleSince = idleSince or os.clock()
+                local why = lastReason
+                if Farm.FailSafeActive then why = "FailSafe active"
+                elseif os.clock() < (Farm.MovePauseUntil or 0) then why = "Refill flying (MovePause)"
+                elseif not Cfg.AutoFarm then why = "AutoFarm off" end
+                idleWhy = why or "unknown (target=" .. tostring(target ~= nil) .. ")"
+                if os.clock() - idleSince > 0.7 and not idleLogged then
+                    idleLogged = true
+                    print(("[SmoothHub] IDLE >0.7s: %s | level=%s"):format(idleWhy, tostring(Farm.Level)))
+                end
+                task.wait(0.1)
+            end
+            if attacked then idleLogged = false end
 
             -- สถิติบนหน้าจอ (อัปเดตวินาทีละครั้ง)
             now = os.clock()
@@ -2650,6 +3111,99 @@ do
     -- เปิดค้างไว้จากการเซฟ: เริ่มเองเมื่อสคริปต์โหลด
     if Cfg.AutoFarm then task.defer(Farm.OnAutoFarm, true) end
 end
+---------------------------------------------------------
+-- 🛟 Fail Safe: ชนะติดกันครบจำนวนที่ตั้ง (Fail Safe At) แล้วจงใจแพ้ 1 ด่าน
+--  • นับ Current Streak ตอน Auto Farm ทำงาน: เห็นหน้า MISSION COMPLETED = +1 / ตัวละครตาย = รีเซ็ตเป็น 0
+--  • เปิด Auto Fail Safe และ Streak >= Fail Safe At -> Auto Farm หยุดฟัน บินไปยืนข้างเท้าไททัน (ปิด No Clip)
+--    ปล่อยให้ไททันฆ่า ตายแล้ว Streak = 0 แล้วกลับไปฟาร์มตามปกติ
+---------------------------------------------------------
+do
+    local COUNT_GAP = 3 -- หน้า MISSION COMPLETED หายนานเท่านี้ = หน้าใหม่ (นับ +1 ได้อีก)
+    Farm.FailSafeActive = false
+
+    function Farm.RefreshStreak()
+        if Farm.SetStreak then Farm.SetStreak(Cfg.Streak) end
+    end
+    local function Say(text)
+        if Farm.SetFailSafeStatus then Farm.SetFailSafeStatus(text) end
+    end
+    local function ResetStreak()
+        if Cfg.Streak ~= 0 then
+            Cfg.Streak = 0
+            Save()
+        end
+        Farm.RefreshStreak()
+    end
+
+    -- นับชนะติดกัน
+    task.spawn(function()
+        local counted, goneSince = false, nil
+        while Alive() do
+            task.wait(1)
+            if Cfg.AutoFarm and Farm.CanUseHere() and Farm.CompleteScreenShown then
+                if Farm.CompleteScreenShown() then
+                    goneSince = nil
+                    if not counted then
+                        counted = true
+                        Cfg.Streak += 1
+                        Save()
+                        Farm.RefreshStreak()
+                    end
+                else
+                    goneSince = goneSince or os.clock()
+                    if os.clock() - goneSince >= COUNT_GAP then counted = false end
+                end
+            end
+        end
+    end)
+
+    -- ตัวคุม Fail Safe
+    task.spawn(function()
+        local sawAlive, wasAlive = false, false
+        while Alive() do
+            task.wait(0.5)
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local aliveNow = hum ~= nil and hum.Health > 0
+            local want = Cfg.AutoFailSafe and Cfg.AutoFarm and Cfg.FailSafeAt > 0
+
+            if not Farm.CanUseHere() then
+                Farm.FailSafeActive, sawAlive, wasAlive = false, false, false
+                Say(Cfg.AutoFailSafe and "Not available in the lobby / menu" or "Off")
+            else
+                -- ตายระหว่างฟาร์มปกติ = สายชนะติดกันขาด
+                if wasAlive and not aliveNow and Cfg.AutoFarm and not Farm.FailSafeActive then ResetStreak() end
+                wasAlive = aliveNow
+
+                if not want then
+                    Farm.FailSafeActive, sawAlive = false, false
+                    Say(Cfg.AutoFailSafe and "Waiting for Auto Farm" or ("Off (streak " .. Cfg.Streak .. ")"))
+                elseif not Farm.FailSafeActive then
+                    if Cfg.Streak >= Cfg.FailSafeAt then
+                        Farm.FailSafeActive, sawAlive = true, false
+                        Farm.StopNoClip()
+                        Say("Streak reached - losing on purpose")
+                    else
+                        Say(("Streak %d / %d"):format(Cfg.Streak, Cfg.FailSafeAt))
+                    end
+                else
+                    if aliveNow then
+                        sawAlive = true
+                        Say("Letting a titan kill you...")
+                    elseif sawAlive then
+                        -- ตายแล้ว = แพ้ตามที่ตั้งใจ
+                        ResetStreak()
+                        Farm.FailSafeActive, sawAlive = false, false
+                        Say("Lost on purpose - streak reset to 0")
+                    end
+                end
+            end
+        end
+    end)
+
+    task.defer(Farm.RefreshStreak)
+end
+
 ---------------------------------------------------------
 -- 🔪 Auto Reload
 -- วิธีรีโหลด: จำลองกดปุ่ม R (VirtualInputManager) ซ้ำจนใบมีดกลับมา และหยุดฟันของ Auto Farm ชั่วคราวระหว่างรีโหลด
@@ -2891,7 +3445,9 @@ do
     task.spawn(function()
         while Alive() do
             task.wait(CHECK_INTERVAL)
-            if not (Cfg.AutoReload and Farm.CanUseHere()) or reloading or InputBlocked() then
+            -- ถือหอกสายฟ้าอยู่ (HUD หอกแสดง) = ไม่รีโหลดใบมีด กันกด R / หยุดฟาร์มโดยไม่จำเป็น
+            local holdingSpears = (Farm.ReadSpears and Farm.ReadSpears()) ~= nil
+            if not (Cfg.AutoReload and Farm.CanUseHere()) or reloading or InputBlocked() or holdingSpears then
                 lowSince = nil
             else
                 local char = LocalPlayer.Character
@@ -2950,8 +3506,8 @@ end
 -- ไม่ใช้ได้ในหน้าเมนู / ล็อบบี้
 ---------------------------------------------------------
 do
-    local CHECK_INTERVAL = 0.1   -- เช็ค HUD ถี่ขึ้น เพื่อไปทันทีที่หมด
-    local CONFIRM_TIME = 0       -- ไม่รอยืนยัน: หมดปุ๊บไปปั๊บ (ตั้งเป็น 0.3-0.5 ถ้าอ่าน HUD พลาดแล้วบินไปเปล่า ๆ)
+    local CHECK_INTERVAL = 0.25  -- เช็ค HUD ทุกกี่วินาที
+    local CONFIRM_TIME = 0.5     -- ต้องหมดต่อเนื่องเท่านี้ถึงจะไป Refill (กันอ่าน HUD พลาดแล้วบินไปเปล่า ๆ จนหยุดฟันนาน)
     Farm.RefillSpeed = 1000      -- ความเร็วตอนบินไป Refill และบินกลับ (studs/วินาที)
     local BASE_COOLDOWN = 8
     local MAX_COOLDOWN = 60
@@ -3045,33 +3601,74 @@ do
 
     -- ตัวเลขหอกบน HUD (ถ้าเกมมีแสดง เช่น "2 / 2" ใต้ชื่อ Spear / Thunder)
     local spearLabel, spearScanAt = nil, 0
+    -- "1 / 8" -> คืน 1 และจำค่าเต็ม (8) ไว้ใน Farm.SpearMax (ใช้ตอน Refill แล้วอ่าน HUD ไม่ได้)
+    local function ParseSpears(text)
+        local cur, max = text:match("^%s*(%d+)%s*/%s*(%d+)%s*$")
+        if not cur then return nil end
+        max = tonumber(max)
+        if max and max >= 1 and max <= 99 then Farm.SpearMax = max end
+        return tonumber(cur)
+    end
     local function ReadSpears()
         if spearLabel and spearLabel.Parent then
             if not IsShownGui(spearLabel) then return nil end
-            local cur = spearLabel.Text:match("^%s*(%d+)%s*/%s*%d+%s*$")
-            return cur and tonumber(cur) or nil
+            return ParseSpears(spearLabel.Text)
         end
         spearLabel = nil
         if os.clock() - spearScanAt < 5 then return nil end
         spearScanAt = os.clock()
+        -- หาป้ายตัวเลข "12 / 12" ที่แสดงอยู่ (ชื่อในเกมไม่มีคำว่า spear) โดยไม่เอาของใบมีด/เควสต์/ภารกิจ
         local root = PlayerGui:FindFirstChild("Interface") or PlayerGui
+        local best, bestScore = nil, -1
         for _, d in ipairs(root:GetDescendants()) do
-            if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text:match("^%s*%d+%s*/%s*%d+%s*$") then
+            if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text:match("^%s*%d+%s*/%s*%d+%s*$") and IsShownGui(d) then
                 local names, cur = {}, d
                 while cur and cur ~= PlayerGui do
                     names[#names + 1] = cur.Name:lower()
                     cur = cur.Parent
                 end
                 local path = table.concat(names, ".")
-                if path:find("spear", 1, true) or path:find("thunder", 1, true) then
-                    spearLabel = d
-                    break
+                local skip = false
+                for _, word in ipairs({ "blade", "quest", "mission", "achiev", "objective", "reward", "shop", "inventory", "market" }) do
+                    if path:find(word, 1, true) then skip = true break end
+                end
+                if not skip then
+                    local score = 0
+                    if path:find("spear", 1, true) or path:find("thunder", 1, true) then score += 3 end
+                    if path:find("hud", 1, true) then score += 1 end
+                    if score > bestScore then best, bestScore = d, score end
                 end
             end
+        end
+        if best then
+            spearLabel = best
+            return ParseSpears(best.Text)
         end
         return nil
     end
 
+    Farm.ReadSpears = ReadSpears -- ใช้ร่วมกับโหมดหอกของ Auto Farm
+
+    -- _G.SmoothHubFarm.SpearDebug() = สแกนใหม่ แล้วพิมพ์ป้ายตัวเลขหอกที่เลือก + ป้าย "N / M" ที่เห็นทั้งหมด (ไว้เช็คว่าอ่านถูกตัว)
+    function Farm.SpearDebug()
+        spearLabel, spearScanAt = nil, 0
+        local value = ReadSpears()
+        print("[SmoothHub] Spears HUD:", tostring(value), "| label:", spearLabel and spearLabel:GetFullName() or "NOT FOUND",
+            "| counted:", tostring(Farm.SpearsLeft), "| weapon mode:", Farm.WeaponMode)
+        local root = PlayerGui:FindFirstChild("Interface") or PlayerGui
+        for _, d in ipairs(root:GetDescendants()) do
+            if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text:match("^%s*%d+%s*/%s*%d+%s*$") then
+                print("   ", IsShownGui(d) and "shown " or "hidden", d.Text, "|", d:GetFullName())
+            end
+        end
+        return value
+    end
+    -- หอกที่เหลือ: อ่านจาก HUD ได้ใช้ HUD / ไม่ได้ใช้ตัวที่นับเองจากการยิง (Farm.SpearsLeft)
+    local function SpearsNow()
+        local hud = ReadSpears()
+        if hud ~= nil then return hud end
+        return Farm.SpearsLeft
+    end
     local lowSince, cooldown, nextAllowedAt, busy = nil, BASE_COOLDOWN, 0, false
     local warnedSpear = false
 
@@ -3085,6 +3682,19 @@ do
 
     -- คืนข้อความว่าอะไรหมด (nil = ยังไม่หมด / อ่านไม่ได้ จะไม่ยิง)
     local function WhatIsEmpty()
+        -- เซิร์ฟเวอร์ปฏิเสธการยิงหอกเมื่อกี้ (ยืนยันว่าหมด) แม้ HUD จะยังโชว์เลขค้างอยู่
+        if Farm.SpearEmptyAt and os.clock() - Farm.SpearEmptyAt < 20 then return "thunder spears" end
+        -- หอก: ตัวเลขหอกขึ้นเฉพาะตอนถือหอก (แถบดาบยังโชว์ค้างอยู่ได้) จึงเช็คหอกก่อนเสมอ
+        local hudSpears = (Farm.WeaponMode ~= "Blades") and ReadSpears() or nil -- โหมดดาบ: ไม่ต้องสแกน HUD หาตัวเลขหอก (สแกนทั้ง UI ทำให้กระตุก)
+        if hudSpears ~= nil then
+            if hudSpears <= 0 then return "thunder spears" end
+            return nil
+        end
+        -- อ่านเลขหอกไม่ได้ แต่เพิ่งยิงหอกอยู่ (เช่นบังคับ WeaponMode) ใช้ตัวที่นับเอง
+        if Farm.SpearsLeft ~= nil and os.clock() - (Farm.LastSpearAt or 0) < 90 then
+            if Farm.SpearsLeft <= 0 then return "thunder spears" end
+            return nil
+        end
         local okB, depleted = pcall(Farm.IsBladeDepleted)
         if okB and depleted ~= nil then
             -- HUD ดาบแสดงอยู่ = กำลังถือดาบ: หมดจริงต้องแถบหมด + ชุดสำรอง 0
@@ -3093,7 +3703,7 @@ do
             return nil
         end
         -- HUD ดาบไม่แสดง = น่าจะถือหอก
-        local spears = ReadSpears()
+        local spears = SpearsNow()
         if spears ~= nil and spears <= 0 then return "thunder spears" end
         if spears == nil and not spearLabel and Cfg.AutoRefills and not warnedSpear and os.clock() - spearScanAt > 4 then
             warnedSpear = true
@@ -3110,7 +3720,7 @@ do
             local sets = Farm.ReadSets and Farm.ReadSets() or nil
             return ok and depleted == false or (sets ~= nil and sets > 0)
         end
-        local spears = ReadSpears()
+        local spears = SpearsNow()
         return spears ~= nil and spears > 0
     end
 
@@ -3125,8 +3735,8 @@ do
             local sets = Farm.ReadSets and Farm.ReadSets() or nil
             return ("Blades: bar %d%% | sets %s"):format(math.floor(fraction * 100 + 0.5), sets ~= nil and tostring(sets) or "?")
         end
-        local spears = ReadSpears()
-        if spears ~= nil then return "Spears: " .. tostring(spears) end
+        local spears = SpearsNow()
+        if spears ~= nil then return "Spears: " .. tostring(spears) .. (ReadSpears() == nil and " (counted)" or "") end
         return "HUD not readable (blades hidden / spear counter not found)"
     end
 
@@ -3187,6 +3797,9 @@ do
             Status("Refilling " .. kind .. "...")
             local ok, err = FireRefill(target)
             local firedAt = os.clock()
+            -- Refill ไม่มีคำตอบกลับ และ HUD ไม่มีเลขหอก: ถือว่าหอกเต็มแล้ว (ถ้าไม่จริง S_Fire จะโดนปฏิเสธแล้วมาทำ Refill ใหม่เอง)
+            if ok and kind == "thunder spears" and ReadSpears() == nil then Farm.SpearsLeft = Farm.SpearMax end
+            if kind == "thunder spears" then Farm.SpearEmptyAt = nil end
             if Farm.Debug then print("[SmoothHub] Auto Refills:", kind, ok, err, target:GetFullName()) end
             -- ยิงเสร็จบินกลับทันที (ความเร็วเท่ากัน) ไม่ต้องรอผลก่อน
             if travelled and originPos then
@@ -3365,6 +3978,7 @@ do
         end
         return nil
     end
+    Farm.CompleteScreenShown = function() return FindCompleteTitle() ~= nil end -- ใช้นับ "ชนะติดกัน" ของ Fail Safe
 
     -- หาข้อความปุ่มในหน้าเดียวกับป้าย (ไต่ขึ้นไปหากรอบที่มีข้อความขึ้นต้นตาม pattern เช่น "^RETRY" / "^LEAVE")
     local function FindButtonText(title, pattern)
@@ -5097,6 +5711,7 @@ local HubConfig = {
     AutoExecute = false,
     EnableFPSLock = false,
     FPSLimit = 144,
+    AutoDeleteMap = false,
 }
 for key, value in pairs(HubConfig) do UiSync.Defaults.Hub[key] = value end
 ConfigStore.BuildDefault(UiSync.Defaults.Hub) -- config ค่าเริ่มต้นครบทุกค่าแล้ว
@@ -5439,6 +6054,169 @@ Fps.OnUpdate = function(fps, mode, nativeName)
     end)
 end
 
+-- ───── Delete Map : ลบสิ่งปลูกสร้าง/ต้นไม้/กำแพง "ในเครื่องเรา" ให้เครื่องเบาลง ─────
+-- ลบเฉพาะฝั่งคุณ (เซิร์ฟเวอร์และคนอื่นไม่เห็นผล) Rejoin แล้วแมพกลับมาเหมือนเดิม
+-- เก็บไว้: พื้น (ชิ้นที่ด้านบนไม่สูงเกินพื้น + 6 studs), Terrain, ไททัน, ตัวละครทุกคน, กล้อง, Debris, Spears,
+--          จุด Refill, สิ่งที่มี ProximityPrompt/ClickDetector, SpawnLocation (และกล่อง/โฟลเดอร์ที่ใส่ของเหล่านี้)
+-- นอกจากนั้นปิดเงา (GlobalShadows) และเอฟเฟกต์ภาพ (Bloom / Blur / SunRays / DepthOfField ฯลฯ)
+-- เรียกเองได้จาก executor: _G.SmoothHubFarm.DeleteMap()
+local MapCleaner = {}
+Farm.MapCleaner = MapCleaner
+do
+    local KEEP_ABOVE = 6 -- เก็บชิ้นส่วนที่ด้านบนสูงไม่เกิน "ระดับพื้น + ค่านี้" (พื้น / ขอบถนน / ของเตี้ย ๆ)
+    local busy = false
+
+    -- ระดับพื้น: ยิงเรย์ลงจากตัวเรากับไททันบางตัว แล้วเอาจุดที่ต่ำสุด (กันไปโดนหลังคา)
+    local function GroundY()
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local titans = workspace:FindFirstChild("Titans")
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local ignore = {}
+        if char then ignore[#ignore + 1] = char end
+        if titans then ignore[#ignore + 1] = titans end
+        params.FilterDescendantsInstances = ignore
+
+        local best = nil
+        local function sample(pos)
+            local hit = workspace:Raycast(pos, Vector3.new(0, -3000, 0), params)
+            if hit and (not best or hit.Position.Y < best) then best = hit.Position.Y end
+        end
+        if root then sample(root.Position) end
+        if titans then
+            local n = 0
+            for _, t in ipairs(titans:GetChildren()) do
+                local r = t:FindFirstChild("HumanoidRootPart")
+                if r then
+                    sample(r.Position)
+                    n += 1
+                    if n >= 6 then break end
+                end
+            end
+        end
+        return best
+    end
+
+    function MapCleaner.Run()
+        if busy then return false, "Already running..." end
+        busy = true
+        local okCall, ok, text = pcall(function()
+            local groundY = GroundY()
+            if not groundY then return false, "Can't find the ground - stand on the map first" end
+            local limit = groundY + KEEP_ABOVE
+
+            local roots = {}
+            roots[workspace.Terrain] = true
+            if workspace.CurrentCamera then roots[workspace.CurrentCamera] = true end
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr.Character then roots[plr.Character] = true end
+            end
+            for _, name in ipairs({ "Titans", "Debris" }) do
+                local f = workspace:FindFirstChild(name)
+                if f then roots[f] = true end
+            end
+
+            -- ต้องเก็บทั้งก้อน (รวมลูกทั้งหมด)
+            local function Protected(node)
+                if roots[node] then return true end
+                local n = node.Name
+                if n == "Refill" or n == "Spears" then return true end
+                if node:IsA("SpawnLocation") or node:IsA("ProximityPrompt") or node:IsA("ClickDetector") or node:IsA("Humanoid") then return true end
+                if node:IsA("Model") and node:FindFirstChildOfClass("Humanoid") then return true end
+                return false
+            end
+
+            local visited, toDestroy = 0, {}
+            -- คืน true = ต้องเก็บโหนดนี้ไว้ (ตัวมันเองหรือของข้างในต้องเก็บ) / false = ลบทั้งก้อนได้
+            local function Plan(node)
+                visited += 1
+                if visited % 1500 == 0 then task.wait() end
+                if Protected(node) then return true end
+                local keepSelf = false
+                if node:IsA("BasePart") then
+                    keepSelf = (node.Position.Y + node.Size.Y / 2) <= limit
+                end
+                local children = node:GetChildren()
+                local flags, anyKept = {}, false
+                for i, c in ipairs(children) do
+                    local f = Plan(c)
+                    flags[i] = f
+                    if f then anyKept = true end
+                end
+                if not (keepSelf or anyKept) then return false end
+                for i, c in ipairs(children) do
+                    if not flags[i] then toDestroy[#toDestroy + 1] = c end
+                end
+                return true
+            end
+
+            for _, child in ipairs(workspace:GetChildren()) do
+                if not Plan(child) then toDestroy[#toDestroy + 1] = child end
+            end
+            for i, inst in ipairs(toDestroy) do
+                pcall(function() inst:Destroy() end)
+                if i % 200 == 0 then task.wait() end
+            end
+
+            -- ลดภาระกราฟิก: ปิดเงา + เอฟเฟกต์ภาพ
+            pcall(function()
+                local lighting = game:GetService("Lighting")
+                lighting.GlobalShadows = false
+                for _, e in ipairs(lighting:GetChildren()) do
+                    if e:IsA("PostEffect") then e.Enabled = false end
+                end
+            end)
+            return true, ("Deleted %d map objects (scanned %d). Rejoin to get the map back."):format(#toDestroy, visited)
+        end)
+        busy = false
+        if not okCall then return false, "Error: " .. tostring(ok) end
+        return ok, text
+    end
+end
+
+function Farm.DeleteMap()
+    task.spawn(function()
+        if MapCleaner.OnResult then MapCleaner.OnResult("Deleting the map...") end
+        local _, text = MapCleaner.Run()
+        if MapCleaner.OnResult then MapCleaner.OnResult(text or "") end
+    end)
+end
+
+-- ลบแมพเองอัตโนมัติเมื่อเปิดสวิตช์ Auto Delete Map: ตอนอยู่ในด่าน (รอโหลด 4 วิ) และกวาดซ้ำทุก 20 วิ (ส่วนที่โหลดเพิ่ม)
+task.spawn(function()
+    local since, lastDone = nil, 0
+    while Alive() do
+        task.wait(1)
+        if HubConfig.AutoDeleteMap and Farm.CanUseHere and Farm.CanUseHere() then
+            since = since or os.clock()
+            if os.clock() - since >= 4 and os.clock() - lastDone >= 20 then
+                lastDone = os.clock()
+                Farm.DeleteMap()
+            end
+        else
+            since = nil
+        end
+    end
+end)
+
+local DelMapRow = FpsForm:Row()
+local DelMapStack = DelMapRow:Left():TitleStack({
+    Title = "Delete Map",
+    Subtitle = "Removes buildings, trees and walls on YOUR screen only, to cut lag. Rejoin to get the map back."
+})
+local DelMapRun
+local DelMapBtn = DelMapRow:Right():Button({
+    Label = "Delete",
+    Callback = function() if DelMapRun then DelMapRun() end end
+})
+DelMapRun = BindButton(DelMapBtn, function() Farm.DeleteMap() end)
+MapCleaner.OnResult = function(text)
+    pcall(function() DelMapStack.Subtitle = text end)
+end
+
+AddToggle(FpsForm, "Auto Delete Map", "Deletes the map by itself every time you are in a mission.", "AutoDeleteMap")
+
 end
 
 -- ═════════ Server ═════════
@@ -5681,6 +6459,73 @@ UiSync.Hotkey = HotkeyRow:Right():KeybindField({
         end
     end
 })
+
+-- 📱 ปุ่มลอยสำหรับมือถือ: แตะเพื่อพับ/เปิดหน้าต่าง (มือถือไม่มีคีย์บอร์ดให้กดปุ่มพับ) ลากย้ายตำแหน่งได้
+task.spawn(function()
+    local UIS = game:GetService("UserInputService")
+    if not UIS.TouchEnabled then return end
+    local parent = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+    pcall(function()
+        local old = parent:FindFirstChild("SmoothHubToggle")
+        if old then old:Destroy() end
+    end)
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "SmoothHubToggle"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 999998
+    local okParent = pcall(function() gui.Parent = parent end)
+    if not okParent or not gui.Parent then gui.Parent = PlayerGui end
+
+    local btn = Instance.new("TextButton")
+    btn.Name = "Toggle"
+    btn.Size = UDim2.fromOffset(46, 46)
+    btn.Position = UDim2.new(0, 14, 0.5, -23)
+    btn.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
+    btn.BackgroundTransparency = 0.12
+    btn.AutoButtonColor = true
+    btn.Text = "S"
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 22
+    btn.Parent = gui
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = btn
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(10, 132, 255)
+    stroke.Thickness = 2
+    stroke.Parent = btn
+
+    local dragging, moved, dragStart, startPos = false, false, nil, nil
+    local function isPress(input)
+        return input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1
+    end
+    btn.InputBegan:Connect(function(input)
+        if isPress(input) then
+            dragging, moved = true, false
+            dragStart, startPos = input.Position, btn.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local d = input.Position - dragStart
+            if d.Magnitude > 8 then moved = true end
+            if moved then
+                btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end
+    end)
+    btn.InputEnded:Connect(function(input)
+        if isPress(input) and dragging then
+            dragging = false
+            if not moved then Window.Minimized = not Window.Minimized end -- แตะเฉย ๆ = พับ/เปิด | ลาก = ย้ายปุ่ม
+        end
+    end)
+
+    -- สคริปต์ถูกรันใหม่ (token เปลี่ยน) = ลบปุ่มเก่าทิ้ง
+    while Alive() and gui.Parent do task.wait(1) end
+    pcall(function() gui:Destroy() end)
+end)
 
 -- ═════════ Config ═════════
 ConfigTab = SettingsCategory:Tab({
@@ -6378,4 +7223,4 @@ task.spawn(function()
     tw(stroke, 0.4, { Transparency = 1 })
     task.wait(0.55)
     finish()
-end)    
+end)
