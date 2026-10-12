@@ -16,6 +16,14 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local IN_MENU = (game.PlaceId == MENU_PLACE_ID)
 
+-- 🔒 ตารางส่วนตัวของสคริปต์ (ไม่ผูกกับ _G จึงสคริปต์อื่นมองไม่เห็นและเรียกใช้ไม่ได้)
+-- DEV = false ตอนปล่อยจริง: print/warn เงียบ, ไม่เขียนไฟล์รายงาน, ไม่เปิดคำสั่งดีบักให้ executor
+-- DEV = true เฉพาะตอนพัฒนาเอง: ได้ _G.SmoothHubFarm / _G.SmoothHubSpin และข้อความดีบักกลับมา
+local SH = { DEV = false }
+function SH.say(...) print("[Smooth Hub]", ...) end -- ข้อความถึงผู้ใช้ (ความคืบหน้าการโหลด)
+function SH.dbg(...) if SH.DEV then print(...) end end -- ข้อความภายใน เห็นเฉพาะตอน DEV
+SH.say("Loading Smooth Hub | Attack on Titan Revolution (" .. (IN_MENU and "Lobby" or "In-game") .. ") ...")
+
 -- กันรันซ้ำ: ลูปเก่าหยุด + หน้าต่างเก่าถูกล้าง
 if type(_G.SmoothHubCleanup) == "function" then pcall(_G.SmoothHubCleanup) end
 local token = {}
@@ -463,11 +471,13 @@ end
 ---------------------------------------------------------
 -- โหลด UI
 ---------------------------------------------------------
+SH.say("Loading interface...")
 local okLib, Cascade = pcall(function()
     return loadstring(game:HttpGet("https://raw.githubusercontent.com/smoothhubv1-prog/Cascade-UI-Library/refs/heads/main/Ui.luau"))()
 end)
 if not okLib or type(Cascade) ~= "table" then
-    warn("[SmoothHub] โหลด UI ไม่สำเร็จ:", tostring(Cascade))
+    SH.say("Could not load the interface. Check your internet connection.")
+    SH.dbg("[SmoothHub] โหลด UI ไม่สำเร็จ:", tostring(Cascade))
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "Smooth Hub", Text = "โหลด UI ไม่สำเร็จ (เช็คเน็ต/ลิงก์ GitHub)", Duration = 8,
@@ -475,6 +485,8 @@ if not okLib or type(Cascade) ~= "table" then
     end)
     return
 end
+
+SH.say("Interface ready.")
 
 local function Icon(...)
     for _, name in ipairs({ ... }) do
@@ -911,7 +923,7 @@ end)
 
 local Window = App:Window({
     Title = "Attack on Titan Revolution",
-    Subtitle = "Smooth Hub",
+    Subtitle = "Smooth Hub | Beta Test",
     Size = WindowSize,
     Resizable = true,
     Draggable = true,
@@ -1312,21 +1324,29 @@ do
         if Cfg.SpinOnKeep == "Ask" then return "ask" end
         return "stop"
     end
-    _G.SmoothHubSpin = _G.SmoothHubSpin or {}
-    _G.SmoothHubSpin.Decide = Decide
-    _G.SmoothHubSpin.SetRule = SetRule
+    SH.Spin = SH.Spin or {}
+    SH.Spin.Decide = Decide
+    SH.Spin.SetRule = SetRule
 
-    local SpinSection = CharTab:PageSection({
-        Title = "🎰 Auto Spin",
-        Subtitle = "Opens the Family page by itself, presses ROLL for you and stops before replacing a good family."
-    })
-    local SpinForm = SpinSection:Form()
+    -- 3 หมวด: Roll Family (สั่งสุ่ม/สถานะ) | Settings Roll (กฎเก็บตระกูล) | Show Roll (ประวัติการสุ่ม)
+    local SpinForm = CharTab:PageSection({
+        Title = "🎰 Roll Family",
+        Subtitle = "Auto roll your family."
+    }):Form()
+    local RuleForm = CharTab:PageSection({
+        Title = "⚙️ Settings Roll",
+        Subtitle = "Choose which families to keep."
+    }):Form()
+    local ShowForm = CharTab:PageSection({
+        Title = "📜 Show Roll",
+        Subtitle = "Your roll history."
+    }):Form()
 
     local spinToggle
     local spinRow = SpinForm:Row()
     spinRow:Left():TitleStack({
         Title = "Auto Spin [ Lucky999+ ]",
-        Subtitle = "Press ROLL again and again (using the blue selection border + Enter)."
+        Subtitle = "Keeps pressing ROLL for you."
     })
     spinToggle = UiSync.Link(spinRow:Right():Toggle({
         Value = Cfg.AutoSpin,
@@ -1336,11 +1356,28 @@ do
         end
     }), Cfg, "AutoSpin")
 
+    -- Spin Status
+    local statusRow = SpinForm:Row()
+    statusRow:Left():TitleStack({ Title = "Spin Status", Subtitle = "What Auto Spin is doing now." })
+    local statusLabel = statusRow:Right():Label({ Text = "Off" })
+    local lastStatus = nil
+    local function Status(text)
+        text = tostring(text)
+        if text == lastStatus then return end
+        lastStatus = text
+        pcall(function() statusLabel.Text = text end)
+    end
+
+    -- Last Roll
+    local lastRow = SpinForm:Row()
+    local lastStack = lastRow:Left():TitleStack({ Title = "Last Roll", Subtitle = "No rolls yet." })
+    local lastLabel = lastRow:Right():Label({ Text = "-" })
+
     -- Stop At Rarity
-    local stopRow = SpinForm:Row()
+    local stopRow = RuleForm:Row()
     stopRow:Left():TitleStack({
         Title = "Keep Rarity",
-        Subtitle = "Families at this rarity or higher are keepers (not replaced by the next roll). Off = never stop for rarity, keep rolling until ROLL runs out."
+        Subtitle = "Keep this rarity or higher. Off = never stop for rarity."
     })
     local function StopIndex()
         return table.find(STOP_OPTIONS, Cfg.SpinStopRarity) or 2
@@ -1364,10 +1401,10 @@ do
     end)
 
     -- When I Get A Keeper
-    local keepRow = SpinForm:Row()
+    local keepRow = RuleForm:Row()
     keepRow:Left():TitleStack({
         Title = "When I Get A Keeper",
-        Subtitle = "What to do when you roll a keeper: stop, store it in Family Storage and keep spinning, or ask me."
+        Subtitle = "Stop, store it and keep rolling, or ask me."
     })
     local function KeepIndex()
         return table.find(KEEP_ACTIONS, Cfg.SpinOnKeep) or 1
@@ -1419,7 +1456,7 @@ do
         RefreshRulePickers()
     end
     local function AddRulePicker(title, subtitle, rule)
-        local row = SpinForm:Row()
+        local row = RuleForm:Row()
         row:Left():TitleStack({ Title = title, Subtitle = subtitle })
         local ok, btn = pcall(function()
             return row:Right():PopUpButton({
@@ -1456,12 +1493,12 @@ do
         StyleDropdown(btn)
     end
     AddRulePicker("Always Keep Families",
-        "Tick the families you always want to keep (for example rare ones to sell), even below Keep Rarity.", "Keep")
+        "Always keep these, even below Keep Rarity.", "Keep")
     AddRulePicker("Always Ask Families",
-        "Tick the families you want a question box for every time you roll them.", "Ask")
+        "Ask me every time these roll.", "Ask")
     AddRulePicker("Never Keep Families",
-        "Tick the families you never want to keep, even at or above Keep Rarity.", "Skip")
-    local rulesRow = SpinForm:Row()
+        "Never keep these, even above Keep Rarity.", "Skip")
+    local rulesRow = RuleForm:Row()
     rulesStack = rulesRow:Left():TitleStack({ Title = "Saved Rules", Subtitle = RulesSummary() })
     UiSync.Add(function()
         local i = KeepIndex()
@@ -1474,7 +1511,7 @@ do
     local useDelayRow = SpinForm:Row()
     useDelayRow:Left():TitleStack({
         Title = "Use Spin Delay",
-        Subtitle = "On = wait the Spin Delay below after every roll. Off = no fixed wait: go on as soon as the new result shows on screen (max 2.5s if the same family comes up again)."
+        Subtitle = "On: wait after every roll. Off: go on as soon as the result shows."
     })
     UiSync.Link(useDelayRow:Right():Toggle({
         Value = Cfg.SpinUseDelay ~= false,
@@ -1488,7 +1525,7 @@ do
     local delayRow = SpinForm:Row()
     delayRow:Left():TitleStack({
         Title = "Spin Delay",
-        Subtitle = "Used only when 'Use Spin Delay' is on. Seconds to wait after each roll so the result shows up (0.5 - 10). Too low and a keeper may get rolled over before it's read."
+        Subtitle = "Seconds to wait after each roll (0.5 - 10)."
     })
     local delayRight = delayRow:Right()
     local delayLabel = delayRight:Label({ Text = Cfg.SpinDelay .. "s" })
@@ -1505,34 +1542,20 @@ do
         pcall(function() delayLabel.Text = want .. "s" end)
     end)
 
-    -- Spin Status
-    local statusRow = SpinForm:Row()
-    statusRow:Left():TitleStack({ Title = "Spin Status", Subtitle = "What Auto Spin is doing right now." })
-    local statusLabel = statusRow:Right():Label({ Text = "Off" })
-    local lastStatus = nil
-    local function Status(text)
-        text = tostring(text)
-        if text == lastStatus then return end
-        lastStatus = text
-        pcall(function() statusLabel.Text = text end)
-    end
 
     -- ───── ผลสปิน: ได้ Family อะไรบ้าง ─────
     local history, stats = {}, { rolls = 0, byRarity = {} }
-    _G.SmoothHubSpin.History = history -- ดูจากสคริปต์ได้เลย: _G.SmoothHubSpin.History / PrintHistory()
+    SH.Spin.History = history
     local RARITY_ORDER = { "EXCLUSIVE", "SECRET", "MYTHIC", "LEGENDARY", "EPIC", "UNCOMMON", "RARE", "COMMON" }
 
-    local lastRow = SpinForm:Row()
-    local lastStack = lastRow:Left():TitleStack({ Title = "Last Roll", Subtitle = "No rolls yet." })
-    local lastLabel = lastRow:Right():Label({ Text = "-" })
 
     -- สวิตช์ซ่อน/โชว์รายชื่อตระกูลที่สุ่มได้ + เลือกจำนวนที่โชว์
     -- (ประกาศ RefreshList ไว้ก่อน ตัวจริงใส่ทีหลังด้านล่าง เพราะสวิตช์ตรงนี้เรียกใช้)
     local RefreshList = function() end
-    local showListRow = SpinForm:Row()
+    local showListRow = ShowForm:Row()
     showListRow:Left():TitleStack({
         Title = "Show Rolled Families",
-        Subtitle = "Show or hide the list of families you rolled."
+        Subtitle = "Show or hide the list."
     })
     UiSync.Link(showListRow:Right():Toggle({
         Value = Cfg.SpinShowList == true,
@@ -1543,10 +1566,10 @@ do
         end
     }), Cfg, "SpinShowList", function() RefreshList() end)
 
-    local sizeRow = SpinForm:Row()
+    local sizeRow = ShowForm:Row()
     sizeRow:Left():TitleStack({
         Title = "List Size",
-        Subtitle = "How many of the latest rolls to show (5 - 100). The full log keeps the last 300 rolls - use Copy below to get all of them."
+        Subtitle = "Recent rolls to show (5 - 100)."
     })
     local sizeRight = sizeRow:Right()
     local sizeLabel = sizeRight:Label({ Text = tostring(Cfg.SpinListSize) })
@@ -1566,7 +1589,7 @@ do
     end)
 
     -- รายชื่อตระกูลที่สุ่มได้ (ใหม่สุดอยู่บนสุด โชว์ตามจำนวนที่ตั้งใน List Size)
-    local listRow = SpinForm:Row()
+    local listRow = ShowForm:Row()
     local listStack = listRow:Left():TitleStack({ Title = "Rolled Families", Subtitle = "Nothing rolled yet." })
     local function ListText()
         local lines = {}
@@ -1591,9 +1614,9 @@ do
             if Cfg.SpinShowList then
                 listStack.Subtitle = ListText()
             elseif #history > 0 then
-                listStack.Subtitle = "Hidden | " .. SummaryText() .. " - turn on 'Show Rolled Families' to see the list."
+                listStack.Subtitle = "Hidden | " .. SummaryText()
             else
-                listStack.Subtitle = "Hidden - turn on 'Show Rolled Families' to see the list."
+                listStack.Subtitle = "Hidden. Turn on 'Show Rolled Families'."
             end
         end)
     end
@@ -1609,7 +1632,7 @@ do
         local entry = { n = isStart and 0 or stats.rolls, name = Pretty(name), rarity = Cap(rarity), time = stamp }
         history[#history + 1] = entry
         if #history > 300 then table.remove(history, 1) end
-        print(("[SmoothHub] Spin %s: %s (%s)"):format(isStart and "(start)" or ("#" .. entry.n), entry.name, entry.rarity))
+        SH.dbg(("[SmoothHub] Spin %s: %s (%s)"):format(isStart and "(start)" or ("#" .. entry.n), entry.name, entry.rarity))
         pcall(function()
             lastLabel.Text = entry.name .. " (" .. entry.rarity .. ")"
             lastStack.Subtitle = (isStart and "Current family when you started" or ("Roll #" .. entry.n)) .. " | " .. SummaryText()
@@ -1625,23 +1648,23 @@ do
         lines[#lines + 1] = "--- " .. SummaryText()
         return table.concat(lines, "\n")
     end
-    function _G.SmoothHubSpin.PrintHistory() print(HistoryText()) end
-    function _G.SmoothHubSpin.Clear()
+    function SH.Spin.PrintHistory() SH.dbg(HistoryText()) end
+    function SH.Spin.Clear()
         for i = #history, 1, -1 do history[i] = nil end
         stats.rolls, stats.byRarity = 0, {}
         pcall(function() lastLabel.Text = "-" lastStack.Subtitle = "No rolls yet." end)
         RefreshList()
     end
 
-    local copyRow = SpinForm:Row()
-    copyRow:Left():TitleStack({ Title = "Spin Log", Subtitle = "Copy every family you rolled so far to the clipboard." })
+    local copyRow = ShowForm:Row()
+    copyRow:Left():TitleStack({ Title = "Spin Log", Subtitle = "Copy all rolls to the clipboard." })
     local copyBtn = copyRow:Right():Button({ Label = "Copy", Callback = function() end })
     BindButton(copyBtn, function()
         local text = HistoryText()
         pcall(function()
             if type(setclipboard) == "function" then setclipboard(text) elseif type(toclipboard) == "function" then toclipboard(text) end
         end)
-        print(text)
+        SH.dbg(text)
     end)
 
     -- ───── อ่านหน้าจอ ─────
@@ -1919,7 +1942,7 @@ do
         if os.clock() - navAt < 2.5 then return end
         navAt = os.clock()
         if navTries >= 8 then
-            Status("Couldn't open the Family page - open it once yourself (or run DumpButtons)")
+            Status("Couldn't open the Family page - open it once yourself")
             return
         end
         local famBtn = FindShownButton(function(d)
@@ -1951,8 +1974,8 @@ do
     end
 
     -- ไว้หาชื่อปุ่มไอคอน F: รันตอนอยู่หน้าแต่งตัว _G.SmoothHubSpin.DumpButtons() (ก๊อปลงคลิปบอร์ด + เซฟไฟล์ SmoothHub_buttons.txt)
-    _G.SmoothHubSpin = _G.SmoothHubSpin or {}
-    function _G.SmoothHubSpin.DumpButtons()
+    SH.Spin = SH.Spin or {}
+    function SH.Spin.DumpButtons()
         local lines = { "=== visible buttons (path | class | text | image) ===" }
         for _, d in ipairs(PlayerGui:GetDescendants()) do
             if d:IsA("GuiButton") and IsShown(d) then
@@ -1967,7 +1990,7 @@ do
             if type(setclipboard) == "function" then setclipboard(text) elseif type(toclipboard) == "function" then toclipboard(text) end
         end)
         pcall(function() if type(writefile) == "function" then writefile("SmoothHub_buttons.txt", text) end end)
-        print(text)
+        SH.dbg(text)
         return #lines - 1
     end
 
@@ -2002,7 +2025,7 @@ do
     local function StoreCurrent(name, rarity)
         Status(("Storing %s..."):format(Pretty(name)))
         local ok, res = InvokeGet("Family", "Store")
-        print("[SmoothHub] Auto Spin: Store ->", ok, res)
+        SH.dbg("[SmoothHub] Auto Spin: Store ->", ok, res)
         if not ok then return false, tostring(res) end
         local t0 = os.clock()
         while os.clock() - t0 < 4 do
@@ -2092,7 +2115,7 @@ do
         Save()
         pcall(function() spinToggle.Value = false end)
         Status(message)
-        print("[SmoothHub] Auto Spin:", message)
+        SH.dbg("[SmoothHub] Auto Spin:", message)
         pcall(function()
             game:GetService("StarterGui"):SetCore("SendNotification", {
                 Title = "Smooth Hub - Auto Spin", Text = message, Duration = 10,
@@ -2158,7 +2181,7 @@ do
                                 if ok then
                                     storesSinceRoll += 1
                                     emptySlotOk = true
-                                    print("[SmoothHub] Auto Spin: stored " .. label)
+                                    SH.dbg("[SmoothHub] Auto Spin: stored " .. label)
                                     Notify("Stored " .. label)
                                 elseif why ~= "stopped" then
                                     StopSpin(("Stopped: couldn't store %s (%s)"):format(label, why))
@@ -2184,7 +2207,7 @@ do
                             end
                             if not registered then
                                 fails += 1
-                                print(("[SmoothHub] Auto Spin: roll didn't register (%d/%d) via %s"):format(fails, #PRESS_METHODS, tostring(used)))
+                                SH.dbg(("[SmoothHub] Auto Spin: roll didn't register (%d/%d) via %s"):format(fails, #PRESS_METHODS, tostring(used)))
                                 Status(("Roll didn't register (%d/%d) via %s"):format(fails, #PRESS_METHODS, tostring(used)))
                                 if fails >= #PRESS_METHODS then StopSpin("Stopped: ROLL button doesn't respond (tried every press method)") end
                             else
@@ -2608,8 +2631,8 @@ local FarmTab = MainCategory:Tab({
     Icon = Icon("boltFill"),
 })
 local AutoFarmSection = FarmTab:PageSection({
-    Title = "🛠️ Main",
-    Subtitle = "Core features and settings"
+    Title = "⚔️ Auto Farm",
+    Subtitle = "The essentials - turn these on and go"
 })
 
 ---------------------------------------------------------
@@ -2622,7 +2645,7 @@ local AutoFarmSection = FarmTab:PageSection({
 -- อัปเดตตัวเลขบนหน้าจอด้วย Farm.SetStreak(n) / Farm.SetRetry(n)
 ---------------------------------------------------------
 local Farm = {}
-_G.SmoothHubFarm = Farm -- เรียกจาก executor ได้ เช่น _G.SmoothHubFarm.DumpHud("depleted")
+SH.Farm = Farm
 
 -- ───── Main ─────
 -- Farm.OnAutoFarm(on)                        -- Auto Farm: ทำจริงแล้ว (Fly เหนือหัวไททัน) ดูส่วน "🪽 Auto Farm" ด้านล่าง
@@ -2643,7 +2666,7 @@ function Farm.Fire(name, ...)
     local fn = Farm[name]
     if type(fn) == "function" then
         local ok, err = pcall(fn, ...)
-        if not ok then warn("[SmoothHub] Farm." .. tostring(name) .. ":", err) end
+        if not ok then SH.dbg("[SmoothHub] Farm." .. tostring(name) .. ":", err) end
     end
 end
 
@@ -2701,48 +2724,14 @@ do
         end
     end
 
-    -- ───── Main ─────
+    -- แต่ละแถวเรียก Farm.* เหมือนเดิมทุกอย่าง (การทำงานไม่เปลี่ยน) เปลี่ยนแค่ "อยู่ตรงไหนของหน้าจอ":
+    --   แท็บ Auto Farm     = ของที่ทุกคนใช้ (เปิด-ปิด) + สถิติ + เรื่องหลังจบด่าน
+    --   แท็บ Farm Settings = ปรับแต่งขั้นสูง / ความปลอดภัย / สถานะสด
+
+    -- ───── แท็บ Auto Farm: สิ่งจำเป็น ─────
     AddFarmToggle(MainForm, "Auto Farm", "Automatically completes missions.", "AutoFarm", "OnAutoFarm")
-    AddFarmToggle(MainForm, "No Clip", "Pass through walls and titans while Auto Farm is on.", "NoClip", "OnNoClip")
-    AddFarmToggle(MainForm, "Hit All Parts", "Also hits Eyes, Arms and Legs of each titan, then waits for Part Cooldown (below). The Nape is hit every swing.", "HitAllParts", "OnHitAllParts")
-    AddFarmSlider(MainForm, function(v) return "Tween Speed ( " .. v .. " )" end,
-        "How fast Auto Farm flies to the titans (studs per second).", "FlySpeed", "OnFlySpeed")
-    AddFarmSlider(MainForm, function(v) return "Fly Height ( " .. v .. " )" end,
-        "How high Auto Farm hovers above the titans' heads (studs).", "FlyHeight", "OnFlyHeight")
-    local ATTACK_SPEED_NAMES = { [0] = "Auto", "Safe", "Fast", "Turbo", "Max" }
-    AddFarmSlider(MainForm, function(v) return "Attack Speed ( " .. tostring(ATTACK_SPEED_NAMES[v] or v) .. " )" end,
-        "Auto = starts at Max and slows down by itself if hits stop landing. 1 Safe ... 4 Max.", "AttackSpeed", "OnAttackSpeed")
-    AddFarmSlider(MainForm, function(v) return "Part Cooldown ( " .. v .. "s )" end,
-        "How often Eyes / Arms / Legs are hit again. 0 = every swing (damage on every part). Watch the hit % in Farm Stats.", "PartCooldown", "OnPartCooldown")
     AddFarmToggle(MainForm, "Auto Reload", "Automatically reloads your blades when depleted.", "AutoReload", "OnAutoReload")
     AddFarmToggle(MainForm, "Auto Refills", "Refill at the map's refill station when your blades / thunder spears run out.", "AutoRefills", "OnAutoRefills")
-    do -- แถวบอกสถานะของ Auto Refills (โชว์ค่าที่อ่านได้จาก HUD จะได้รู้ว่ามันเห็นอะไร)
-        local statusRow = MainForm:Row()
-        statusRow:Left():TitleStack({ Title = "Refill Status", Subtitle = "What Auto Refills reads from your HUD." })
-        local statusLabel = statusRow:Right():Label({ Text = "Idle" })
-        local lastText = nil
-        function Farm.SetRefillStatus(text)
-            text = tostring(text)
-            if text == lastText then return end
-            lastText = text
-            pcall(function() statusLabel.Text = text end)
-        end
-    end
-    AddFarmToggle(MainForm, "Damage Multiplier ( x10 )", "Attacking Titan with 10 times the damage carries", "DamageMultiplier", "OnDamageMultiplier")
-    AddFarmSlider(MainForm, function(v) return "Safe Time ( " .. v .. "s )" end,
-        "A mission can't finish sooner than this. 0 = off.", "SafeTime", "OnSafeTime")
-    do -- แถวบอกสถานะของ Safe Time
-        local statusRow = MainForm:Row()
-        statusRow:Left():TitleStack({ Title = "Safe Time Status", Subtitle = "Auto Farm keeps 1 titan alive until the time is reached." })
-        local statusLabel = statusRow:Right():Label({ Text = "Idle" })
-        local lastText = nil
-        function Farm.SetSafeStatus(text)
-            text = tostring(text)
-            if text == lastText then return end
-            lastText = text
-            pcall(function() statusLabel.Text = text end)
-        end
-    end
     do -- แถวสถิติของ Auto Farm (ดูว่าไททันกี่ตัวที่ฟันได้จริง / ฟันกี่ครั้งต่อวินาที)
         local statsRow = MainForm:Row()
         statsRow:Left():TitleStack({ Title = "Farm Stats", Subtitle = "Titans loaded / total | swings per second | speed level | kills | hit rate" })
@@ -2755,34 +2744,63 @@ do
             pcall(function() statsLabel.Text = text end)
         end
     end
-    AddFarmSlider(MainForm, function(v) return "Fail Safe At [ " .. v .. " ]" end,
-        "Lose on purpose after this many wins in a row. 0 = never.", "FailSafeAt", "OnFailSafeAt")
-    Farm.SetStreak = AddCounterRow(MainForm, function(n) return "Current Streak ( " .. tostring(n) .. " )" end, "RefreshStreak")
-    AddFarmToggle(MainForm, "Auto Fail Safe", "When the streak is reached, fly to a titan and let it kill you.", "AutoFailSafe", "OnAutoFailSafe")
-    do -- แถวบอกสถานะของ Fail Safe
-        local statusRow = MainForm:Row()
-        statusRow:Left():TitleStack({ Title = "Fail Safe Status", Subtitle = "Current streak and what Fail Safe is doing." })
-        local statusLabel = statusRow:Right():Label({ Text = "Off" })
-        local lastText = nil
-        function Farm.SetFailSafeStatus(text)
-            text = tostring(text)
-            if text == lastText then return end
-            lastText = text
-            pcall(function() statusLabel.Text = text end)
-        end
-    end
 
-    -- ───── Game Options ─────
+    -- ───── แท็บ Auto Farm: หลังจบด่าน ─────
     local OptionsSection = FarmTab:PageSection({
-        Title = "⚙️ Game Options",
+        Title = "⚙️ After the Match",
+        Subtitle = "What to do when a mission ends",
     })
     local OptionsForm = OptionsSection:Form()
-
     AddFarmToggle(OptionsForm, "Auto Retry", "Automatically Retry when completed.", "AutoRetry", "OnAutoRetry")
     AddFarmToggle(OptionsForm, "Auto Leave", "Leave to the lobby right when the match ends.", "AutoLeave", "OnAutoLeave")
+    AddFarmToggle(OptionsForm, "Auto Leave After X Matches",
+        "Retry up to the Retry Amount, then leave (needs Auto Retry). Not together with Auto Leave.",
+        "AutoLeaveWhenRetryComplete", "OnAutoLeaveWhenRetryComplete")
+    AddFarmSlider(OptionsForm, function(v) return "Retry Amount ( " .. v .. " )" end,
+        "Matches to retry before leaving (used by Auto Leave After X Matches).", "RetryAmount", "OnRetryAmount")
     Farm.SetRetry = AddCounterRow(OptionsForm, function(n) return "Current Retry ( " .. tostring(n) .. " )" end, "RefreshRetry")
-    do -- แถวบอกสถานะของ Auto Retry
-        local statusRow = OptionsForm:Row()
+
+    -- ───── แท็บ Farm Settings: ปรับแต่งขั้นสูง ─────
+    local AdvTab = MainCategory:Tab({
+        Title = "Farm Settings",
+        Icon = Icon("sliderHorizontal3", "sliders", "gearFill", "boltFill"),
+    })
+
+    local TuneForm = AdvTab:PageSection({
+        Title = "⚡ Tuning",
+        Subtitle = "Speed and damage. The defaults work for most people.",
+    }):Form()
+    AddFarmToggle(TuneForm, "No Clip", "Pass through walls and titans while Auto Farm is on.", "NoClip", "OnNoClip")
+    AddFarmToggle(TuneForm, "Hit All Parts", "Also hits Eyes, Arms and Legs (the Nape is always hit).", "HitAllParts", "OnHitAllParts")
+    AddFarmToggle(TuneForm, "Damage Multiplier ( x10 )", "Attacking Titan with 10 times the damage carries", "DamageMultiplier", "OnDamageMultiplier")
+    AddFarmSlider(TuneForm, function(v) return "Tween Speed ( " .. v .. " )" end,
+        "How fast Auto Farm flies to the titans (studs per second).", "FlySpeed", "OnFlySpeed")
+    AddFarmSlider(TuneForm, function(v) return "Fly Height ( " .. v .. " )" end,
+        "How high Auto Farm hovers above the titans' heads (studs).", "FlyHeight", "OnFlyHeight")
+    local ATTACK_SPEED_NAMES = { [0] = "Auto", "Safe", "Fast", "Turbo", "Max" }
+    AddFarmSlider(TuneForm, function(v) return "Attack Speed ( " .. tostring(ATTACK_SPEED_NAMES[v] or v) .. " )" end,
+        "Auto adapts by itself if hits stop landing. 1 = Safe ... 4 = Max.", "AttackSpeed", "OnAttackSpeed")
+    AddFarmSlider(TuneForm, function(v) return "Part Cooldown ( " .. v .. "s )" end,
+        "Delay before Eyes / Arms / Legs are hit again. 0 = every swing.", "PartCooldown", "OnPartCooldown")
+
+    local SafetyForm = AdvTab:PageSection({
+        Title = "🛟 Safety",
+        Subtitle = "Keep missions from finishing too fast and break long win streaks",
+    }):Form()
+    AddFarmSlider(SafetyForm, function(v) return "Safe Time ( " .. v .. "s )" end,
+        "A mission can't finish sooner than this. 0 = off.", "SafeTime", "OnSafeTime")
+    AddFarmSlider(SafetyForm, function(v) return "Fail Safe At [ " .. v .. " ]" end,
+        "Lose on purpose after this many wins in a row. 0 = never.", "FailSafeAt", "OnFailSafeAt")
+    Farm.SetStreak = AddCounterRow(SafetyForm, function(n) return "Current Streak ( " .. tostring(n) .. " )" end, "RefreshStreak")
+    AddFarmToggle(SafetyForm, "Auto Fail Safe", "When the streak is reached, fly to a titan and let it kill you.", "AutoFailSafe", "OnAutoFailSafe")
+
+    -- ───── แท็บ Farm Settings: สถานะสด (รวมไว้ที่เดียว ไม่ปนกับสวิตช์) ─────
+    local StatusForm = AdvTab:PageSection({
+        Title = "📊 Live Status",
+        Subtitle = "What each feature is doing right now",
+    }):Form()
+    do -- สถานะของ Auto Retry
+        local statusRow = StatusForm:Row()
         statusRow:Left():TitleStack({ Title = "Retry Status", Subtitle = "What Auto Retry is doing right now." })
         local statusLabel = statusRow:Right():Label({ Text = "Idle" })
         local lastText = nil
@@ -2793,11 +2811,42 @@ do
             pcall(function() statusLabel.Text = text end)
         end
     end
-    AddFarmSlider(OptionsForm, function(v) return "Retry Amount ( " .. v .. " )" end,
-        "Matches to retry before leaving (used by Auto Leave After X Matches).", "RetryAmount", "OnRetryAmount")
-    AddFarmToggle(OptionsForm, "Auto Leave After X Matches",
-        "Retry until the Retry Amount is reached, then leave to the lobby (needs Auto Retry). Can't be on together with Auto Leave.",
-        "AutoLeaveWhenRetryComplete", "OnAutoLeaveWhenRetryComplete")
+    do -- สถานะของ Auto Refills (โชว์ค่าที่อ่านได้จาก HUD จะได้รู้ว่ามันเห็นอะไร)
+        local statusRow = StatusForm:Row()
+        statusRow:Left():TitleStack({ Title = "Refill Status", Subtitle = "What Auto Refills reads from your HUD." })
+        local statusLabel = statusRow:Right():Label({ Text = "Idle" })
+        local lastText = nil
+        function Farm.SetRefillStatus(text)
+            text = tostring(text)
+            if text == lastText then return end
+            lastText = text
+            pcall(function() statusLabel.Text = text end)
+        end
+    end
+    do -- สถานะของ Safe Time
+        local statusRow = StatusForm:Row()
+        statusRow:Left():TitleStack({ Title = "Safe Time Status", Subtitle = "Auto Farm keeps 1 titan alive until the time is reached." })
+        local statusLabel = statusRow:Right():Label({ Text = "Idle" })
+        local lastText = nil
+        function Farm.SetSafeStatus(text)
+            text = tostring(text)
+            if text == lastText then return end
+            lastText = text
+            pcall(function() statusLabel.Text = text end)
+        end
+    end
+    do -- สถานะของ Fail Safe
+        local statusRow = StatusForm:Row()
+        statusRow:Left():TitleStack({ Title = "Fail Safe Status", Subtitle = "Current streak and what Fail Safe is doing." })
+        local statusLabel = statusRow:Right():Label({ Text = "Off" })
+        local lastText = nil
+        function Farm.SetFailSafeStatus(text)
+            text = tostring(text)
+            if text == lastText then return end
+            lastText = text
+            pcall(function() statusLabel.Text = text end)
+        end
+    end
 end
 ---------------------------------------------------------
 -- 🪽 Auto Farm : Fly ไปลอยอยู่เหนือหัวไททัน (ไม่ใช้ Tween / ไม่วาป)
@@ -3095,7 +3144,7 @@ do
             elseif os.clock() - probeAt >= 1.5 then
                 if (root.Position - probePos).Magnitude < 2 then
                     usingTween = true
-                    warn("[SmoothHub] Auto Farm: Fly ขยับไม่ได้ -> สลับไปใช้ Tween")
+                    SH.dbg("[SmoothHub] Auto Farm: Fly ขยับไม่ได้ -> สลับไปใช้ Tween")
                 end
                 probePos, probeAt = root.Position, os.clock()
             end
@@ -3136,11 +3185,11 @@ do
         if on then
             Farm.UpdateNoClip()
             if not Farm.CanUseHere() then
-                warn("[SmoothHub] Auto Farm: ไม่ทำงานในหน้าเมนู/ล็อบบี้ (จะเริ่มเมื่ออยู่ในด่าน)")
+                SH.dbg("[SmoothHub] Auto Farm: ไม่ทำงานในหน้าเมนู/ล็อบบี้ (จะเริ่มเมื่ออยู่ในด่าน)")
             end
             conn = RunService.Heartbeat:Connect(function()
                 local ok, err = pcall(Step)
-                if not ok then warn("[SmoothHub] Auto Farm:", err) end
+                if not ok then SH.dbg("[SmoothHub] Auto Farm:", err) end
             end)
         end
     end
@@ -3332,11 +3381,11 @@ do
 
     function Farm.TestMulti()
         task.spawn(function()
-            if Cfg.AutoFarm then print("[SmoothHub] ปิด Auto Farm ก่อนทดสอบ") return end
+            if Cfg.AutoFarm then SH.dbg("[SmoothHub] ปิด Auto Farm ก่อนทดสอบ") return end
             local post = PostRemote()
             local char = LocalPlayer.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
-            if not (post and root) then print("[SmoothHub] ไม่พบ POST remote หรือตัวละคร") return end
+            if not (post and root) then SH.dbg("[SmoothHub] ไม่พบ POST remote หรือตัวละคร") return end
 
             local pool = {}
             local folder = TitansFolder()
@@ -3351,7 +3400,7 @@ do
             end
             table.sort(pool, function(x, y) return x.d < y.d end)
             if #pool < 9 then
-                print(("[SmoothHub] ต้องมีไททันอย่างน้อย 9 ตัว (ตอนนี้ %d)"):format(#pool))
+                SH.dbg(("[SmoothHub] ต้องมีไททันอย่างน้อย 9 ตัว (ตอนนี้ %d)"):format(#pool))
                 return
             end
 
@@ -3398,7 +3447,7 @@ do
             task.wait(2)
             local cDead, cHurt = Hurt(groups[3])
 
-            print(("[SmoothHub] ผลทดสอบ (จาก 3 ตัว)  A Batch: ตาย %d / โดน %d  |  B Burst: ตาย %d / โดน %d  |  C Sequential: ตาย %d / โดน %d")
+            SH.dbg(("[SmoothHub] ผลทดสอบ (จาก 3 ตัว)  A Batch: ตาย %d / โดน %d  |  B Burst: ตาย %d / โดน %d  |  C Sequential: ตาย %d / โดน %d")
                 :format(aDead, aHurt, bDead, bHurt, cDead, cHurt))
 
             local best, bestScore = Farm.MultiMode, -1
@@ -3406,7 +3455,7 @@ do
                 if r[2] > bestScore then best, bestScore = r[1], r[2] end
             end
             Farm.MultiMode = best
-            print("[SmoothHub] ตั้ง Farm.MultiMode =", best, "(ตั้งเองได้: _G.SmoothHubFarm.MultiMode = \"Sequential\")")
+            SH.dbg("[SmoothHub] ตั้ง Farm.MultiMode =", best, "(ตั้งเองได้: _G.SmoothHubFarm.MultiMode = \"Sequential\")")
         end)
     end
 
@@ -3419,11 +3468,11 @@ do
     ---------------------------------------------------------
     function Farm.TestParts()
         task.spawn(function()
-            if Cfg.AutoFarm then print("[SmoothHub] ปิด Auto Farm ก่อนทดสอบ") return end
+            if Cfg.AutoFarm then SH.dbg("[SmoothHub] ปิด Auto Farm ก่อนทดสอบ") return end
             local post = PostRemote()
             local char = LocalPlayer.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
-            if not (post and root) then print("[SmoothHub] ไม่พบ POST remote หรือตัวละคร") return end
+            if not (post and root) then SH.dbg("[SmoothHub] ไม่พบ POST remote หรือตัวละคร") return end
 
             local pool = {}
             local folder = TitansFolder()
@@ -3439,7 +3488,7 @@ do
             table.sort(pool, function(x, y) return x.d < y.d end)
             local size = (#pool >= 12) and 3 or 2
             if #pool < size * 4 then
-                print(("[SmoothHub] ต้องมีไททันที่โหลดแล้วอย่างน้อย %d ตัว (ตอนนี้ %d)"):format(size * 4, #pool))
+                SH.dbg(("[SmoothHub] ต้องมีไททันที่โหลดแล้วอย่างน้อย %d ตัว (ตอนนี้ %d)"):format(size * 4, #pool))
                 return
             end
             local groups = {}
@@ -3500,7 +3549,7 @@ do
             local dD, dH = Swing(groups[4], ByTitan)
             Farm.NapeFirst = savedFirst
 
-            print(("[SmoothHub] ผลทดสอบ (วิธีละ %d ตัว)  A Nape อย่างเดียว: ตาย %d / โดน %d  |  B ทุกส่วน(Nape ท้าย): ตาย %d / โดน %d  |  C รอบละชิ้นส่วน: ตาย %d / โดน %d  |  D ทุกส่วน(Nape ก่อน): ตาย %d / โดน %d")
+            SH.dbg(("[SmoothHub] ผลทดสอบ (วิธีละ %d ตัว)  A Nape อย่างเดียว: ตาย %d / โดน %d  |  B ทุกส่วน(Nape ท้าย): ตาย %d / โดน %d  |  C รอบละชิ้นส่วน: ตาย %d / โดน %d  |  D ทุกส่วน(Nape ก่อน): ตาย %d / โดน %d")
                 :format(size, aD, aH, bD, bH, cD, cH, dD, dH))
 
             local best, bestScore = "B", bD * 10 + bH
@@ -3510,9 +3559,9 @@ do
             if best == "C" then Farm.PartMode, Farm.NapeFirst = "ByPart", false
             elseif best == "D" then Farm.PartMode, Farm.NapeFirst = "ByTitan", true
             else Farm.PartMode, Farm.NapeFirst = "ByTitan", false end
-            print("[SmoothHub] ตั้ง Farm.PartMode =", Farm.PartMode, "| Farm.NapeFirst =", Farm.NapeFirst)
+            SH.dbg("[SmoothHub] ตั้ง Farm.PartMode =", Farm.PartMode, "| Farm.NapeFirst =", Farm.NapeFirst)
             if aD * 10 + aH >= bestScore then
-                print("[SmoothHub] Nape อย่างเดียวโดนไม่น้อยกว่าทุกส่วน -> ลองปิดสวิตช์ Hit All Parts ดู (ไม่ได้ปิดให้เอง)")
+                SH.dbg("[SmoothHub] Nape อย่างเดียวโดนไม่น้อยกว่าทุกส่วน -> ลองปิดสวิตช์ Hit All Parts ดู (ไม่ได้ปิดให้เอง)")
             end
         end)
     end
@@ -3543,7 +3592,7 @@ do
         end
         lines[#lines + 1] = ("alive titans: %d | last spear: %s | reason: %s"):format(count, tostring(Farm.LastSpear), tostring(Farm.SpearReason))
         local text = table.concat(lines, "\n")
-        print(text)
+        SH.dbg(text)
         pcall(function() setclipboard(text) end)
         return text
     end
@@ -3838,7 +3887,7 @@ do
                     local fired, died = ClickSpear(e)
                     Farm.LastSpear = ("Click[%s] -> fired=%s died=%s | left=%s try=%d"):format(
                         tostring(Farm.SpearClickMethod), tostring(fired), tostring(died), tostring(left), try)
-                    if Farm.Debug then print("[SmoothHub] " .. Farm.LastSpear) end
+                    if Farm.Debug then SH.dbg("[SmoothHub] " .. Farm.LastSpear) end
                     if fired then
                         firedThis, firedAny = true, true
                         Farm.SpearMiss = 0
@@ -3930,7 +3979,7 @@ do
                 local arg = Farm.SpearArg and tonumber(Farm.SpearArg) or math.min(left, Farm.SpearArgCap)
                 local ok, res = pcall(function() return GET:InvokeServer("Spears", "S_Fire", tostring(arg)) end)
                 Farm.LastSpear = ("S_Fire(%s) -> ok=%s result=%s | left=%s"):format(tostring(arg), tostring(ok), tostring(res), tostring(left))
-                if Farm.Debug then print("[SmoothHub] " .. Farm.LastSpear) end
+                if Farm.Debug then SH.dbg("[SmoothHub] " .. Farm.LastSpear) end
                 if ok and res ~= nil and res ~= false then -- สำเร็จ = true | nil/false = เซิร์ฟเวอร์ปฏิเสธ
                     Farm.SpearMiss = 0
                     Farm.SpearReason = nil
@@ -4063,7 +4112,7 @@ do
                     Farm.Slashing = true
                     local ok, err = pcall(Slash, post, list, p)
                     Farm.Slashing = false
-                    if not ok then warn("[SmoothHub] Auto Farm attack:", err) end
+                    if not ok then SH.dbg("[SmoothHub] Auto Farm attack:", err) end
                     cycles += 1
                     task.wait(p.gap)
                 end
@@ -4082,7 +4131,7 @@ do
                 idleWhy = why or "unknown (target=" .. tostring(target ~= nil) .. ")"
                 if os.clock() - idleSince > 0.7 and not idleLogged then
                     idleLogged = true
-                    print(("[SmoothHub] IDLE >0.7s: %s | level=%s"):format(idleWhy, tostring(Farm.Level)))
+                    SH.dbg(("[SmoothHub] IDLE >0.7s: %s | level=%s"):format(idleWhy, tostring(Farm.Level)))
                 end
                 task.wait(0.1)
             end
@@ -4114,7 +4163,7 @@ do
             end
           end)
           if not okTick then
-              warn("[SmoothHub] Auto Farm loop error:", errTick)
+              SH.dbg("[SmoothHub] Auto Farm loop error:", errTick)
               task.wait(1)
           end
         end
@@ -4331,6 +4380,7 @@ do
 
     -- ───── รายงาน HUD (ไว้ส่งให้เขียนตัวตรวจจับให้ตรงเกม) ─────
     local function DumpHud(reason)
+        if not SH.DEV then return end -- ปล่อยจริง: ไม่เขียนไฟล์ ไม่คัดลอก ไม่พิมพ์รายงานโครงสร้าง UI ของเกม
         local lines = { ("=== SmoothHub HUD report | %s | PlaceId %s"):format(tostring(reason), tostring(game.PlaceId)) }
         local function walk(d, depth, maxDepth)
             local info = {}
@@ -4378,7 +4428,7 @@ do
         local copied = false
         if type(setclipboard) == "function" then copied = pcall(setclipboard, text)
         elseif type(toclipboard) == "function" then copied = pcall(toclipboard, text) end
-        warn(("[SmoothHub] HUD report (%s) -> ไฟล์:%s คลิปบอร์ด:%s"):format(
+        SH.dbg(("[SmoothHub] HUD report (%s) -> ไฟล์:%s คลิปบอร์ด:%s"):format(
             tostring(reason), saved and fileName or "x", copied and "ok" or "x"))
     end
     Farm.DumpHud = DumpHud -- เรียกเองได้: Farm.DumpHud("manual")
@@ -4450,7 +4500,7 @@ do
         nextAllowedAt = 0
         reported = false
         if on and not Farm.CanUseHere() then
-            warn("[SmoothHub] Auto Reload: ไม่ทำงานในหน้าเมนู/ล็อบบี้ (จะเริ่มทำงานเมื่ออยู่ในด่าน)")
+            SH.dbg("[SmoothHub] Auto Reload: ไม่ทำงานในหน้าเมนู/ล็อบบี้ (จะเริ่มทำงานเมื่ออยู่ในด่าน)")
         end
     end
 
@@ -4482,13 +4532,13 @@ do
                             task.spawn(function()
                                 local okCall, ok, result = pcall(InvokeReload)
                                 if not okCall then ok, result = false, ok Farm.PauseUntil = 0 end
-                                if Farm.Debug then print("[SmoothHub] Auto Reload:", ok, result) end
+                                if Farm.Debug then SH.dbg("[SmoothHub] Auto Reload:", ok, result) end
                                 task.wait(0.3) -- InvokeReload เช็คผลเองแล้ว รอแค่ให้ HUD นิ่ง
                                 local okRead2, still = pcall(Farm.IsBladeDepleted)
                                 if okRead2 and still and result ~= "blocked" then
                                     -- ยิงแล้วใบมีดยังหมดอยู่ = ไม่สำเร็จ / เกมไม่ยอม -> รอนานขึ้นเรื่อย ๆ
                                     cooldown = math.min(cooldown * 2, MAX_COOLDOWN)
-                                    warn(("[SmoothHub] Auto Reload: ยิงแล้วใบมีดยังไม่กลับ (ผล=%s) รอ %ds ก่อนลองใหม่"):format(tostring(result), cooldown))
+                                    SH.dbg(("[SmoothHub] Auto Reload: ยิงแล้วใบมีดยังไม่กลับ (ผล=%s) รอ %ds ก่อนลองใหม่"):format(tostring(result), cooldown))
                                 end
                                 nextAllowedAt = os.clock() + cooldown
                                 lowSince = nil
@@ -4592,7 +4642,7 @@ do
                     refillCache = refill -- ตรงกับที่ Remote Spy จับได้ จำไว้ใช้ซ้ำ
                     return refill
                 end
-                if Farm.Debug then print("[SmoothHub] Auto Refills: ลำดับลูกไม่ตรง ใช้ Refill ที่ใกล้ที่สุดแทน") end
+                if Farm.Debug then SH.dbg("[SmoothHub] Auto Refills: ลำดับลูกไม่ตรง ใช้ Refill ที่ใกล้ที่สุดแทน") end
                 return NearestRefill(container) -- ไม่จำ (ขึ้นกับตำแหน่งผู้เล่น)
             end
         end
@@ -4665,12 +4715,12 @@ do
     function Farm.SpearDebug()
         spearLabel, spearScanAt = nil, 0
         local value = ReadSpears()
-        print("[SmoothHub] Spears HUD:", tostring(value), "| label:", spearLabel and spearLabel:GetFullName() or "NOT FOUND",
+        SH.dbg("[SmoothHub] Spears HUD:", tostring(value), "| label:", spearLabel and spearLabel:GetFullName() or "NOT FOUND",
             "| counted:", tostring(Farm.SpearsLeft), "| weapon mode:", Farm.WeaponMode)
         local root = PlayerGui:FindFirstChild("Interface") or PlayerGui
         for _, d in ipairs(root:GetDescendants()) do
             if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text:match("^%s*%d+%s*/%s*%d+%s*$") then
-                print("   ", IsShownGui(d) and "shown " or "hidden", d.Text, "|", d:GetFullName())
+                SH.dbg("   ", IsShownGui(d) and "shown " or "hidden", d.Text, "|", d:GetFullName())
             end
         end
         return value
@@ -4688,7 +4738,7 @@ do
         lowSince, cooldown, nextAllowedAt = nil, BASE_COOLDOWN, 0
         warnedSpear = false
         if on and not Farm.CanUseHere() then
-            warn("[SmoothHub] Auto Refills: ไม่ทำงานในหน้าเมนู/ล็อบบี้ (จะเริ่มทำงานเมื่ออยู่ในด่าน)")
+            SH.dbg("[SmoothHub] Auto Refills: ไม่ทำงานในหน้าเมนู/ล็อบบี้ (จะเริ่มทำงานเมื่ออยู่ในด่าน)")
         end
     end
 
@@ -4719,7 +4769,7 @@ do
         if spears ~= nil and spears <= 0 then return "thunder spears" end
         if spears == nil and not spearLabel and Cfg.AutoRefills and not warnedSpear and os.clock() - spearScanAt > 4 then
             warnedSpear = true
-            warn("[SmoothHub] Auto Refills: อ่านจำนวน Thunder Spears จาก HUD ไม่ได้ (ยังไม่เจอตัวเลขที่มีคำว่า spear/thunder) " ..
+            SH.dbg("[SmoothHub] Auto Refills: อ่านจำนวน Thunder Spears จาก HUD ไม่ได้ (ยังไม่เจอตัวเลขที่มีคำว่า spear/thunder) " ..
                 "ตอนถือหอกให้รัน _G.SmoothHubFarm.DumpHud(\"spears\") แล้วส่งรายงานมา จะได้ทำตัวอ่านหอกให้ตรงเกม")
         end
         return nil
@@ -4802,7 +4852,7 @@ do
                 Status("Flying to the refill station...")
                 local arrived = TravelTo(stationPos + Vector3.new(0, 3, 0), Farm.RefillSpeed)
                 if not arrived then
-                    warn("[SmoothHub] Auto Refills: บินไปจุด Refill ไม่ถึง (ยังจะลองยิงอยู่)")
+                    SH.dbg("[SmoothHub] Auto Refills: บินไปจุด Refill ไม่ถึง (ยังจะลองยิงอยู่)")
                 end
                 task.wait(0.1) -- ให้เซิร์ฟเวอร์เห็นตำแหน่งใหม่ (สั้นที่สุด)
             end
@@ -4812,7 +4862,7 @@ do
             -- Refill ไม่มีคำตอบกลับ และ HUD ไม่มีเลขหอก: ถือว่าหอกเต็มแล้ว (ถ้าไม่จริง S_Fire จะโดนปฏิเสธแล้วมาทำ Refill ใหม่เอง)
             if ok and kind == "thunder spears" and ReadSpears() == nil then Farm.SpearsLeft = Farm.SpearMax end
             if kind == "thunder spears" then Farm.SpearEmptyAt = nil end
-            if Farm.Debug then print("[SmoothHub] Auto Refills:", kind, ok, err, target:GetFullName()) end
+            if Farm.Debug then SH.dbg("[SmoothHub] Auto Refills:", kind, ok, err, target:GetFullName()) end
             -- ยิงเสร็จบินกลับทันที (ความเร็วเท่ากัน) ไม่ต้องรอผลก่อน
             if travelled and originPos then
                 Status("Flying back...")
@@ -4832,7 +4882,7 @@ do
             Farm.MovePauseUntil = 0
         end
         if not okRun then
-            warn("[SmoothHub] Auto Refills error:", result)
+            SH.dbg("[SmoothHub] Auto Refills error:", result)
             return false
         end
         return result and true or false
@@ -4844,7 +4894,7 @@ do
     function Farm.RefillDebug()
         local okB, depleted = pcall(Farm.IsBladeDepleted)
         local target = ResolveRefill()
-        print("[SmoothHub] Refill debug | place:", game.PlaceId,
+        SH.dbg("[SmoothHub] Refill debug | place:", game.PlaceId,
             "| blade depleted:", okB and tostring(depleted) or "error",
             "| sets:", tostring(Farm.ReadSets and Farm.ReadSets()),
             "| spears:", tostring(ReadSpears()),
@@ -4855,10 +4905,10 @@ do
     function Farm.RefillNow()
         local result = DoRefill("manual")
         if result == nil then
-            warn("[SmoothHub] RefillNow: หา Refill ไม่เจอ (PlaceId " .. tostring(game.PlaceId) .. ")")
+            SH.dbg("[SmoothHub] RefillNow: หา Refill ไม่เจอ (PlaceId " .. tostring(game.PlaceId) .. ")")
             return false
         end
-        print("[SmoothHub] RefillNow: ยิงแล้ว")
+        SH.dbg("[SmoothHub] RefillNow: ยิงแล้ว")
         return true
     end
 
@@ -4896,7 +4946,7 @@ do
                                 local restored = DoRefill(kind)
                                 if restored == nil then
                                     Status("Refill station not found on this map")
-                                    warn("[SmoothHub] Auto Refills: หา Refill ของด่านนี้ไม่เจอ (PlaceId " .. tostring(game.PlaceId) .. ")")
+                                    SH.dbg("[SmoothHub] Auto Refills: หา Refill ของด่านนี้ไม่เจอ (PlaceId " .. tostring(game.PlaceId) .. ")")
                                     cooldown = math.min(cooldown * 2, MAX_COOLDOWN)
                                 elseif restored then
                                     cooldown = BASE_COOLDOWN
@@ -4905,7 +4955,7 @@ do
                                     -- ยิงแล้วไม่กลับ = เซิร์ฟเวอร์ไม่ยอม -> รอนานขึ้นเรื่อย ๆ
                                     cooldown = math.min(cooldown * 2, MAX_COOLDOWN)
                                     Status(("Refill sent but %s not restored (try again in %ds)"):format(kind, cooldown))
-                                    warn(("[SmoothHub] Auto Refills: ยิงแล้ว %s ยังไม่กลับ รอ %ds ก่อนลองใหม่"):format(kind, cooldown))
+                                    SH.dbg(("[SmoothHub] Auto Refills: ยิงแล้ว %s ยังไม่กลับ รอ %ds ก่อนลองใหม่"):format(kind, cooldown))
                                 end
                                 nextAllowedAt = os.clock() + cooldown
                                 lowSince = nil
@@ -5101,7 +5151,7 @@ do
             lastLeave = os.clock()
             Status("Leaving... (" .. why .. ")")
             local ok, err = FireLeave()
-            if Farm.Debug then print("[SmoothHub] Leave fired:", ok, err) end
+            if Farm.Debug then SH.dbg("[SmoothHub] Leave fired:", ok, err) end
             if ok then
                 Status("Leave sent (" .. why .. ")")
                 if Cfg.RetryDone ~= 0 then Farm.ResetRetry() end -- จบสาย Retry แล้ว
@@ -5139,7 +5189,7 @@ do
             lastTry = os.clock()
             Status("Retrying... (" .. Progress(Cfg.RetryDone + (counted and 0 or 1)) .. ")")
             local ok, r = FireRetry()
-            if Farm.Debug then print("[SmoothHub] Retry fired:", ok, r) end
+            if Farm.Debug then SH.dbg("[SmoothHub] Retry fired:", ok, r) end
             if ok then
                 if not counted then
                     counted = true
@@ -5737,7 +5787,7 @@ do
     end)
 
     -- 🔒 โหมดนักพัฒนา: ปุ่ม Copy Claim Debug ซ่อนไว้ (เปลี่ยนเป็น true เฉพาะตอนต้องดีบักเอง ก่อนปล่อยให้คนอื่นใช้ต้องเป็น false)
-    local DEV_MODE = false
+    local DEV_MODE = SH.DEV
     if DEV_MODE then
     -- ปุ่มดีบัก: อ่านอย่างเดียว ไม่ยิง Remote
     -- บอกว่าสคริปต์เห็นอะไรในหน้า Quests / Achievements บ้าง และโครงสร้างปุ่มหมวด (ไว้ทำเปิดหน้าอัตโนมัติ)
@@ -6729,6 +6779,7 @@ for key, value in pairs(HubConfig) do UiSync.Defaults.Hub[key] = value end
 ConfigStore.BuildDefault(UiSync.Defaults.Hub) -- config ค่าเริ่มต้นครบทุกค่าแล้ว
 SettingsStore.Restore(HubConfig, SavedData.Hub)
 ConfigStore.ApplyHub(HubConfig, ConfigStore.AutoloadSnapshot())
+SH.say("Settings loaded.")
 
 -- ───── Auto Execute: ให้สคริปต์รันต่อเองหลังเทเลพอร์ต (Server Hop / Rejoin / ย้ายแมพ) ─────
 -- ใช้ queue_on_teleport ของ executor (ไม่ใช่ทุกตัวที่มี) คิวไว้ 1 ครั้งต่อการเทเลพอร์ต
@@ -6740,6 +6791,7 @@ local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (f
 local AUTOEXEC_LOCK = "SmoothHub/AutoExec.lock" -- กันตัวที่คิวไว้รันซ้ำในเซิร์ฟเวอร์เดียวกัน
 local AUTOEXEC_LOG = "SmoothHub/AutoExec.log" -- บันทึกสั้นๆ ว่าคิวทำงานไหม (ไว้ไล่หาสาเหตุถ้ารันต่อไม่ติด)
 local function AutoExecLog(text)
+    if not SH.DEV then return end -- ปล่อยจริง: ไม่เขียนไฟล์บันทึก
     pcall(function()
         if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("SmoothHub") then
             makefolder("SmoothHub")
@@ -6763,6 +6815,7 @@ local function QueueAutoExecute()
         local LOG = %q
         local LOCK = %q
         local function log(text)
+            if true then return end -- ปล่อยจริง: ไม่เขียนไฟล์บันทึก
             pcall(function()
                 if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("SmoothHub") then makefolder("SmoothHub") end
                 local line = tostring(os.time()) .. " place=" .. tostring(game.PlaceId) .. " [queued] " .. text .. "\n"
@@ -7548,7 +7601,7 @@ ConfigTab = SettingsCategory:Tab({
 do
     local ConfigSection = ConfigTab:PageSection({
         Title = "📁 Configuration",
-        Subtitle = "Save your switches under a name (e.g. FarmBoss). Press Enter Save Config to store your changes into the config in use."
+        Subtitle = "Save your settings under a name (e.g. FarmBoss)."
     })
     local ConfigForm = ConfigSection:Form()
 
@@ -8236,3 +8289,10 @@ task.spawn(function()
     task.wait(0.55)
     finish()
 end)
+
+-- DEV เท่านั้น: เปิดตารางภายในให้เรียกจาก executor
+if SH.DEV then
+    _G.SmoothHubFarm = SH.Farm
+    _G.SmoothHubSpin = SH.Spin
+end
+SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")
