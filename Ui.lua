@@ -54,6 +54,14 @@ local Cfg = {
     AutoStartMission = false,      -- Missions: Auto Start Missions (เซฟข้ามรอบ: เปิดค้างไว้ = กด Start ให้เอง)
     MissionLevel = "Easy (E- Grade)", -- Missions: ความยากที่ใช้สร้างห้อง (เลือก 1 อย่าง)
     MissionJoinDelay = 10,         -- Missions: Join Delay (วินาที 5 - 60)
+    AutoSpin = false,              -- Menu Lobby: Auto Spin (กด ROLL ที่หน้า Family)
+    SpinStopRarity = "Epic",       -- Menu Lobby: หยุดสปินเมื่อได้ความหายากเท่านี้หรือสูงกว่า (กันทับของดี)
+    SpinShowList = false,          -- Menu Lobby: โชว์รายชื่อ Family ที่สุ่มได้ (Rolled Families) | false = ซ่อนไว้ เปิดดูเมื่ออยากดู
+    SpinListSize = 15,             -- Menu Lobby: โชว์ประวัติสุ่มล่าสุดกี่รายการ (5 - 100) ประวัติเต็มเก็บไว้ 300 รายการเสมอ ใช้ปุ่ม Copy เอาทั้งหมด
+    SpinUseDelay = true,           -- Menu Lobby: true = รอตามค่า Spin Delay หลังสปินทุกครั้ง | false = ไม่ใช้ดีเลย์ รอจนผลใหม่ขึ้นหน้าจอแล้วไปต่อทันที
+    SpinDelay = 3,                 -- Menu Lobby: รอหลังสปินแต่ละครั้งกี่วินาที (0.5 - 10 ปรับทีละ 0.5) ให้ผลออกครบก่อนอ่านค่า
+    SpinOnKeep = "Stop",           -- Menu Lobby: เจอ Family ที่อยากเก็บแล้วทำอะไร (Stop = หยุดสปิน | Store = ฝาก Storage แล้วสปินต่อ | Ask = ถามก่อน)
+    SpinFamilyRules = "",          -- Menu Lobby: กฎรายตัว เช่น "YEAGER=Keep;ARLERT=Keep;REISS=Skip" (Keep = เก็บเสมอ | Skip = ไม่เก็บเลย | Ask = ถามเสมอ)
     -- Auto Farm > Main
     AutoFarm = false,              -- Auto Farm
     AutoReload = false,            -- Auto Reload
@@ -85,6 +93,8 @@ local FARM_RANGES = {
     FlyHeight = { 150, 2000 },
     AttackSpeed = { 0, 5 },
     RetryAmount = { 1, 50 },
+    SpinListSize = { 5, 100 },
+    -- SpinDelay ไม่อยู่ในตารางนี้ เพราะตารางนี้ปัดเป็นจำนวนเต็ม (SpinDelay ปรับทีละ 0.5 จัดการแยกด้านล่าง)
 }
 
 ---------------------------------------------------------
@@ -137,7 +147,7 @@ local function ApplyCfgData(data)
     if data.JoinDelay ~= nil then Cfg.JoinDelay = ClampDelay(data.JoinDelay) end
     if data.MissionJoinDelay ~= nil then Cfg.MissionJoinDelay = ClampDelay(data.MissionJoinDelay) end
     for _, key in ipairs({
-        "AutoSelect", "AutoJoin",
+        "AutoSelect", "AutoJoin", "AutoSpin", "SpinUseDelay", "SpinShowList",
         "AutoClaimMain", "AutoClaimSide", "AutoClaimAchievements", "AutoClaimWeekly", "AutoClaimDaily", "AutoOpenPages",
         "AutoUpgradeBlade", "AutoUpgradeThunder", "AutoEquipThunder", "AutoEquipBlade",
         "AutoBestGrade", "AutoBoostMission", "AutoCreateMission", "AutoStartMission",
@@ -157,10 +167,13 @@ local function ApplyCfgData(data)
             Cfg[key] = math.clamp(math.floor(data[key] + 0.5), range[1], range[2])
         end
     end
+    if type(data.SpinDelay) == "number" and data.SpinDelay == data.SpinDelay then
+        Cfg.SpinDelay = math.clamp(math.floor(data.SpinDelay * 2 + 0.5) / 2, 0.5, 10) -- ปัดทีละ 0.5
+    end
     -- ไฟล์เก่าเคยจำสวิตช์ Mission ไว้ในชื่อ RememberAuto... (ย้ายค่ามาให้)
     if data.AutoCreateMission == nil and type(data.RememberAutoCreate) == "boolean" then Cfg.AutoCreateMission = data.RememberAutoCreate end
     if data.AutoStartMission == nil and type(data.RememberAutoStart) == "boolean" then Cfg.AutoStartMission = data.RememberAutoStart end
-    for _, key in ipairs({ "MissionSelect", "MissionObjective", "MissionLevel" }) do
+    for _, key in ipairs({ "MissionSelect", "MissionObjective", "MissionLevel", "SpinStopRarity", "SpinOnKeep", "SpinFamilyRules" }) do
         if type(data[key]) == "string" then Cfg[key] = data[key] end
     end
     for _, key in ipairs({ "MissionDifficulty", "MissionModifiers" }) do
@@ -401,6 +414,8 @@ do
                     Cfg[k] = ClampDelay(v)
                 elseif k == "Slot" then
                     Cfg[k] = math.clamp(math.floor(v), 1, 3)
+                elseif k == "SpinDelay" and v == v then
+                    Cfg[k] = math.clamp(math.floor(v * 2 + 0.5) / 2, 0.5, 10)
                 elseif FARM_RANGES[k] and v == v then
                     Cfg[k] = math.clamp(math.floor(v + 0.5), FARM_RANGES[k][1], FARM_RANGES[k][2])
                 else
@@ -1198,6 +1213,1003 @@ local JoinNowBtn = JoinNowRow:Right():Button({
     Callback = function() end
 })
 BindButton(JoinNowBtn, JoinLobby)
+
+---------------------------------------------------------
+-- 🎰 Auto Spin (หน้า Family: กดปุ่ม ROLL)
+-- กดด้วยวิธีเดียวกับ Character Selection: ตั้งกรอบฟ้า (GuiService.SelectedObject) ที่ปุ่ม ROLL แล้วส่ง Enter
+-- ไม่ยิง Remote เอง ให้เกมส่งคำสั่งตามปุ่มที่กดตามปกติ
+-- กันทับของดี: ก่อนสปินทุกครั้งอ่าน "ชื่อ (ความหายาก)" ของ Family ปัจจุบันจากหน้าจอ
+--  • ถ้าความหายาก >= Stop At Rarity จะหยุดทันที (ไม่สปินทับ) และปิดสวิตช์ให้
+--  • ถ้าอ่านค่าไม่ได้ (เช่น กำลังเล่นอนิเมชัน) จะไม่สปิน รออ่านได้ก่อน
+--  • ถ้า ROLL เหลือ 0 จะหยุด
+-- เปิดหน้า Family ให้เองอัตโนมัติ: กดปุ่ม CUSTOMIZATION ที่เมนูหลัก แล้วกดปุ่มไอคอน F (หาจากชื่อปุ่มที่มีคำว่า "family")
+-- ถ้าหาปุ่มไอคอน F ไม่เจอ ให้รัน _G.SmoothHubSpin.DumpButtons() ตอนอยู่หน้าแต่งตัว แล้วส่งรายการปุ่มมา
+---------------------------------------------------------
+do
+    local RANK = { COMMON = 1, UNCOMMON = 2, RARE = 3, EPIC = 4, LEGENDARY = 5, MYTHIC = 6, SECRET = 7, EXCLUSIVE = 8 }
+    local STOP_OPTIONS = { "Rare", "Epic", "Legendary", "Mythic", "Off" } -- Off = ไม่หยุดตามความหายากเลย (หยุดเฉพาะตระกูลที่ตั้ง Always Keep / ROLL หมด)
+
+    if not table.find(STOP_OPTIONS, Cfg.SpinStopRarity) then Cfg.SpinStopRarity = "Epic" end
+
+    -- ───── เจอ Family ที่อยากเก็บแล้วทำอะไร ─────
+    local KEEP_ACTIONS = { "Stop", "Store", "Ask" }
+    local KEEP_LABELS = { "Stop spinning", "Store & keep spinning", "Ask me" }
+    if not table.find(KEEP_ACTIONS, Cfg.SpinOnKeep) then Cfg.SpinOnKeep = "Stop" end
+
+    -- ตารางตระกูล -> ความหายาก (ชื่อตัวพิมพ์ใหญ่) ใช้เป็นรายชื่อให้เลือกตั้งกฎล่วงหน้า
+    -- ตอนสปินจริงใช้ความหายากที่เกมแสดงบนหน้าจอเป็นหลัก ตระกูลที่ไม่อยู่ในตารางก็ตั้งกฎผ่านคอนฟิกได้
+    local FAMILY_RARITY = {
+        HELOS = "MYTHIC", FRITZ = "MYTHIC",
+        YEAGER = "LEGENDARY", ACKERMAN = "LEGENDARY", REISS = "LEGENDARY",
+        GALLIARD = "EPIC", ZOE = "EPIC", LEONHART = "EPIC", TYBUR = "EPIC",
+        KSAVER = "EPIC", BRAUN = "EPIC", FINGER = "EPIC", ARLERT = "EPIC",
+        BRAUS = "RARE", KRUGER = "RARE", AZUMABITO = "RARE", SMITH = "RARE",
+        GRICE = "RARE", SPRINGER = "RARE", KIRSTEIN = "RARE",
+    }
+
+    local function Cap(s)
+        return (tostring(s):lower():gsub("^%l", string.upper))
+    end
+    local function Pretty(name)
+        return (tostring(name):lower():gsub("(%a)([%w_']*)", function(a, b) return a:upper() .. b end))
+    end
+
+    local FAMILY_LIST, FAMILY_LABELS = {}, {}
+    for key, rar in pairs(FAMILY_RARITY) do FAMILY_LIST[#FAMILY_LIST + 1] = { key = key, rarity = rar } end
+    table.sort(FAMILY_LIST, function(a, b)
+        if RANK[a.rarity] ~= RANK[b.rarity] then return RANK[a.rarity] > RANK[b.rarity] end
+        return a.key < b.key
+    end)
+    for i, f in ipairs(FAMILY_LIST) do FAMILY_LABELS[i] = Pretty(f.key) .. " (" .. Cap(f.rarity) .. ")" end
+
+    -- Cfg.SpinFamilyRules เก็บเป็นสตริง "YEAGER=Keep;REISS=Skip" (เซฟ/โหลด/รีเซ็ตผ่านระบบ Config เดิมได้เลย)
+    local rulesSrc, rulesCache = nil, {}
+    local function Rules()
+        if rulesSrc ~= Cfg.SpinFamilyRules then
+            rulesSrc = Cfg.SpinFamilyRules
+            rulesCache = {}
+            for key, rule in tostring(rulesSrc):gmatch("([^=;]+)=(%a+)") do
+                if rule == "Keep" or rule == "Skip" or rule == "Ask" then rulesCache[key:upper()] = rule end
+            end
+        end
+        return rulesCache
+    end
+    local function WriteRules(map) -- map: ชื่อตัวพิมพ์ใหญ่ -> "Keep" | "Skip" | "Ask" (nil = Default)
+        local parts = {}
+        for k, v in pairs(map) do parts[#parts + 1] = k .. "=" .. v end
+        table.sort(parts)
+        Cfg.SpinFamilyRules = table.concat(parts, ";")
+        Save()
+    end
+    local function SetRule(name, rule) -- ตั้งทีละตัว (rule = nil คือ Default) เรียกจาก executor ได้
+        local copy = {}
+        for k, v in pairs(Rules()) do copy[k] = v end
+        copy[tostring(name):upper()] = rule
+        WriteRules(copy)
+    end
+    local function RulesSummary()
+        local keep, skip, ask = {}, {}, {}
+        for key, rule in pairs(Rules()) do
+            local list = (rule == "Keep" and keep) or (rule == "Skip" and skip) or ask
+            list[#list + 1] = Pretty(key)
+        end
+        local function J(l)
+            table.sort(l)
+            return #l > 0 and table.concat(l, ", ") or "-"
+        end
+        return ("Always keep: %s | Never keep: %s | Always ask: %s"):format(J(keep), J(skip), J(ask))
+    end
+
+    -- ตัดสินใจกับ Family ตัวนี้: "roll" (สปินต่อ) | "stop" | "store" | "ask"
+    local function Decide(name, rarity)
+        local rule = Rules()[tostring(name):upper()]
+        if rule == "Skip" then return "roll" end
+        if rule == "Ask" then return "ask" end
+        local stopRank = Cfg.SpinStopRarity == "Off" and math.huge or (RANK[Cfg.SpinStopRarity:upper()] or RANK.EPIC)
+        local keeper = rule == "Keep" or (RANK[tostring(rarity):upper()] or 0) >= stopRank
+        if not keeper then return "roll" end
+        if Cfg.SpinOnKeep == "Store" then return "store" end
+        if Cfg.SpinOnKeep == "Ask" then return "ask" end
+        return "stop"
+    end
+    _G.SmoothHubSpin = _G.SmoothHubSpin or {}
+    _G.SmoothHubSpin.Decide = Decide
+    _G.SmoothHubSpin.SetRule = SetRule
+
+    local SpinSection = CharTab:PageSection({
+        Title = "🎰 Auto Spin",
+        Subtitle = "Opens the Family page by itself, presses ROLL for you and stops before replacing a good family."
+    })
+    local SpinForm = SpinSection:Form()
+
+    local spinToggle
+    local spinRow = SpinForm:Row()
+    spinRow:Left():TitleStack({
+        Title = "Auto Spin [ Lucky999+ ]",
+        Subtitle = "Press ROLL again and again (using the blue selection border + Enter)."
+    })
+    spinToggle = UiSync.Link(spinRow:Right():Toggle({
+        Value = Cfg.AutoSpin,
+        ValueChanged = function(self, value)
+            Cfg.AutoSpin = value and true or false
+            Save()
+        end
+    }), Cfg, "AutoSpin")
+
+    -- Stop At Rarity
+    local stopRow = SpinForm:Row()
+    stopRow:Left():TitleStack({
+        Title = "Keep Rarity",
+        Subtitle = "Families at this rarity or higher are keepers (not replaced by the next roll). Off = never stop for rarity, keep rolling until ROLL runs out."
+    })
+    local function StopIndex()
+        return table.find(STOP_OPTIONS, Cfg.SpinStopRarity) or 2
+    end
+    local stopDrop = stopRow:Right():PullDownButton({
+        Label = STOP_OPTIONS[StopIndex()],
+        Options = STOP_OPTIONS,
+        Value = StopIndex(),
+        ValueChanged = function(self, index)
+            if type(index) == "table" then index = index[1] end
+            if type(index) ~= "number" or not STOP_OPTIONS[index] then return end
+            Cfg.SpinStopRarity = STOP_OPTIONS[index]
+            self.Label = STOP_OPTIONS[index]
+            Save()
+        end
+    })
+    UiSync.Add(function()
+        local i = StopIndex()
+        stopDrop.Value = i
+        stopDrop.Label = STOP_OPTIONS[i]
+    end)
+
+    -- When I Get A Keeper
+    local keepRow = SpinForm:Row()
+    keepRow:Left():TitleStack({
+        Title = "When I Get A Keeper",
+        Subtitle = "What to do when you roll a keeper: stop, store it in Family Storage and keep spinning, or ask me."
+    })
+    local function KeepIndex()
+        return table.find(KEEP_ACTIONS, Cfg.SpinOnKeep) or 1
+    end
+    local keepDrop = keepRow:Right():PullDownButton({
+        Label = KEEP_LABELS[KeepIndex()],
+        Options = KEEP_LABELS,
+        Value = KeepIndex(),
+        ValueChanged = function(self, index)
+            if type(index) == "table" then index = index[1] end
+            if type(index) ~= "number" or not KEEP_ACTIONS[index] then return end
+            Cfg.SpinOnKeep = KEEP_ACTIONS[index]
+            self.Label = KEEP_LABELS[index]
+            Save()
+        end
+    })
+
+    -- Family Rules: ติ๊กได้หลายตระกูลในแต่ละกลุ่ม (ตั้งไว้ล่วงหน้า) ตระกูลหนึ่งอยู่ได้แค่กลุ่มเดียว
+    -- ติ๊กตระกูลที่เคยอยู่อีกกลุ่ม = ย้ายมากลุ่มนี้ให้เอง / ตระกูลที่ไม่ได้ติ๊กไว้ในกลุ่มไหน = ใช้ Keep Rarity ตามปกติ
+    local rulePickers, syncingRules, rulesStack = {}, false, nil
+    local function PickedIndexes(rule)
+        local picked = {}
+        for i, f in ipairs(FAMILY_LIST) do
+            if Rules()[f.key] == rule then picked[#picked + 1] = i end
+        end
+        return picked
+    end
+    local function RefreshRulePickers()
+        if rulesStack then pcall(function() rulesStack.Subtitle = RulesSummary() end) end
+        syncingRules = true
+        for rule, p in pairs(rulePickers) do
+            if p.multi then pcall(function() p.btn.Value = PickedIndexes(rule) end) end
+        end
+        syncingRules = false
+    end
+    local function ApplyPicked(rule, indexes) -- indexes = ตระกูลที่ติ๊กอยู่ในกลุ่มนี้ตอนนี้
+        local picked = {}
+        for _, i in ipairs(SettingsStore.ValidIndexes(indexes, #FAMILY_LIST)) do picked[FAMILY_LIST[i].key] = true end
+        local copy = {}
+        for k, v in pairs(Rules()) do copy[k] = v end
+        for _, f in ipairs(FAMILY_LIST) do
+            if picked[f.key] then
+                copy[f.key] = rule
+            elseif copy[f.key] == rule then
+                copy[f.key] = nil
+            end
+        end
+        WriteRules(copy)
+        RefreshRulePickers()
+    end
+    local function AddRulePicker(title, subtitle, rule)
+        local row = SpinForm:Row()
+        row:Left():TitleStack({ Title = title, Subtitle = subtitle })
+        local ok, btn = pcall(function()
+            return row:Right():PopUpButton({
+                Options = FAMILY_LABELS,
+                Maximum = #FAMILY_LABELS, -- ต้องกำหนดเกิน 1 ไลบรารีถึงจะติ๊กได้หลายอัน
+                Value = PickedIndexes(rule),
+                ValueChanged = function(self, value)
+                    if syncingRules then return end
+                    ApplyPicked(rule, type(value) == "table" and value or { value })
+                end
+            })
+        end)
+        if ok and btn then
+            rulePickers[rule] = { btn = btn, multi = true }
+        else
+            -- ไลบรารีไม่รองรับติ๊กหลายอัน: กดเลือกตระกูล = เพิ่ม/เอาออกจากกลุ่มนี้ทีละตัว
+            btn = row:Right():PullDownButton({
+                Label = "Tap a family to add / remove",
+                Options = FAMILY_LABELS,
+                Value = 1,
+                ValueChanged = function(self, index)
+                    if syncingRules then return end
+                    if type(index) == "table" then index = index[1] end
+                    if type(index) ~= "number" or not FAMILY_LIST[index] then return end
+                    local picked = PickedIndexes(rule)
+                    local at = table.find(picked, index)
+                    if at then table.remove(picked, at) else picked[#picked + 1] = index end
+                    ApplyPicked(rule, picked)
+                    self.Label = (at and "Removed " or "Added ") .. FAMILY_LABELS[index]
+                end
+            })
+            rulePickers[rule] = { btn = btn, multi = false }
+        end
+        StyleDropdown(btn)
+    end
+    AddRulePicker("Always Keep Families",
+        "Tick the families you always want to keep (for example rare ones to sell), even below Keep Rarity.", "Keep")
+    AddRulePicker("Always Ask Families",
+        "Tick the families you want a question box for every time you roll them.", "Ask")
+    AddRulePicker("Never Keep Families",
+        "Tick the families you never want to keep, even at or above Keep Rarity.", "Skip")
+    local rulesRow = SpinForm:Row()
+    rulesStack = rulesRow:Left():TitleStack({ Title = "Saved Rules", Subtitle = RulesSummary() })
+    UiSync.Add(function()
+        local i = KeepIndex()
+        keepDrop.Value = i
+        keepDrop.Label = KEEP_LABELS[i]
+        RefreshRulePickers()
+    end)
+
+    -- Use Spin Delay (เปิด = รอตามเวลาที่ตั้ง | ปิด = ไม่ใช้ดีเลย์ รอจนผลใหม่ขึ้นแล้วไปต่อทันที)
+    local useDelayRow = SpinForm:Row()
+    useDelayRow:Left():TitleStack({
+        Title = "Use Spin Delay",
+        Subtitle = "On = wait the Spin Delay below after every roll. Off = no fixed wait: go on as soon as the new result shows on screen (max 2.5s if the same family comes up again)."
+    })
+    UiSync.Link(useDelayRow:Right():Toggle({
+        Value = Cfg.SpinUseDelay ~= false,
+        ValueChanged = function(self, value)
+            Cfg.SpinUseDelay = value and true or false
+            Save()
+        end
+    }), Cfg, "SpinUseDelay")
+
+    -- Spin Delay
+    local delayRow = SpinForm:Row()
+    delayRow:Left():TitleStack({
+        Title = "Spin Delay",
+        Subtitle = "Used only when 'Use Spin Delay' is on. Seconds to wait after each roll so the result shows up (0.5 - 10). Too low and a keeper may get rolled over before it's read."
+    })
+    local delayRight = delayRow:Right()
+    local delayLabel = delayRight:Label({ Text = Cfg.SpinDelay .. "s" })
+    UiSync.Link(delayRight:Slider({
+        Minimum = 0.5,
+        Maximum = 10,
+        Value = Cfg.SpinDelay,
+        ValueChanged = function(self, value)
+            Cfg.SpinDelay = math.clamp(math.floor((tonumber(value) or 3) * 2 + 0.5) / 2, 0.5, 10) -- ปัดทีละ 0.5
+            pcall(function() delayLabel.Text = Cfg.SpinDelay .. "s" end)
+            Save()
+        end
+    }), Cfg, "SpinDelay", function(_, want)
+        pcall(function() delayLabel.Text = want .. "s" end)
+    end)
+
+    -- Spin Status
+    local statusRow = SpinForm:Row()
+    statusRow:Left():TitleStack({ Title = "Spin Status", Subtitle = "What Auto Spin is doing right now." })
+    local statusLabel = statusRow:Right():Label({ Text = "Off" })
+    local lastStatus = nil
+    local function Status(text)
+        text = tostring(text)
+        if text == lastStatus then return end
+        lastStatus = text
+        pcall(function() statusLabel.Text = text end)
+    end
+
+    -- ───── ผลสปิน: ได้ Family อะไรบ้าง ─────
+    local history, stats = {}, { rolls = 0, byRarity = {} }
+    _G.SmoothHubSpin.History = history -- ดูจากสคริปต์ได้เลย: _G.SmoothHubSpin.History / PrintHistory()
+    local RARITY_ORDER = { "EXCLUSIVE", "SECRET", "MYTHIC", "LEGENDARY", "EPIC", "UNCOMMON", "RARE", "COMMON" }
+
+    local lastRow = SpinForm:Row()
+    local lastStack = lastRow:Left():TitleStack({ Title = "Last Roll", Subtitle = "No rolls yet." })
+    local lastLabel = lastRow:Right():Label({ Text = "-" })
+
+    -- สวิตช์ซ่อน/โชว์รายชื่อตระกูลที่สุ่มได้ + เลือกจำนวนที่โชว์
+    -- (ประกาศ RefreshList ไว้ก่อน ตัวจริงใส่ทีหลังด้านล่าง เพราะสวิตช์ตรงนี้เรียกใช้)
+    local RefreshList = function() end
+    local showListRow = SpinForm:Row()
+    showListRow:Left():TitleStack({
+        Title = "Show Rolled Families",
+        Subtitle = "Show or hide the list of families you rolled."
+    })
+    UiSync.Link(showListRow:Right():Toggle({
+        Value = Cfg.SpinShowList == true,
+        ValueChanged = function(self, value)
+            Cfg.SpinShowList = value and true or false
+            Save()
+            RefreshList()
+        end
+    }), Cfg, "SpinShowList", function() RefreshList() end)
+
+    local sizeRow = SpinForm:Row()
+    sizeRow:Left():TitleStack({
+        Title = "List Size",
+        Subtitle = "How many of the latest rolls to show (5 - 100). The full log keeps the last 300 rolls - use Copy below to get all of them."
+    })
+    local sizeRight = sizeRow:Right()
+    local sizeLabel = sizeRight:Label({ Text = tostring(Cfg.SpinListSize) })
+    UiSync.Link(sizeRight:Slider({
+        Minimum = 5,
+        Maximum = 100,
+        Value = Cfg.SpinListSize,
+        ValueChanged = function(self, value)
+            Cfg.SpinListSize = math.clamp(math.floor((tonumber(value) or 15) + 0.5), 5, 100)
+            pcall(function() sizeLabel.Text = tostring(Cfg.SpinListSize) end)
+            Save()
+            RefreshList()
+        end
+    }), Cfg, "SpinListSize", function(_, want)
+        pcall(function() sizeLabel.Text = tostring(want) end)
+        RefreshList()
+    end)
+
+    -- รายชื่อตระกูลที่สุ่มได้ (ใหม่สุดอยู่บนสุด โชว์ตามจำนวนที่ตั้งใน List Size)
+    local listRow = SpinForm:Row()
+    local listStack = listRow:Left():TitleStack({ Title = "Rolled Families", Subtitle = "Nothing rolled yet." })
+    local function ListText()
+        local lines = {}
+        for i = #history, math.max(1, #history - (math.clamp(tonumber(Cfg.SpinListSize) or 15, 5, 100) - 1)), -1 do
+            local e = history[i]
+            lines[#lines + 1] = (e.n == 0 and "Start" or ("#" .. e.n)) .. "   " .. e.name .. " (" .. e.rarity .. ")"
+        end
+        return #lines > 0 and table.concat(lines, "\n") or "Nothing rolled yet."
+    end
+
+    local function SummaryText()
+        local parts = {}
+        for _, r in ipairs(RARITY_ORDER) do
+            local n = stats.byRarity[r]
+            if n and n > 0 then parts[#parts + 1] = Cap(r) .. " " .. n end
+        end
+        return ("%d rolls%s"):format(stats.rolls, #parts > 0 and (" | " .. table.concat(parts, " · ")) or "")
+    end
+
+    RefreshList = function()
+        pcall(function()
+            if Cfg.SpinShowList then
+                listStack.Subtitle = ListText()
+            elseif #history > 0 then
+                listStack.Subtitle = "Hidden | " .. SummaryText() .. " - turn on 'Show Rolled Families' to see the list."
+            else
+                listStack.Subtitle = "Hidden - turn on 'Show Rolled Families' to see the list."
+            end
+        end)
+    end
+    RefreshList() -- ตั้งข้อความเริ่มต้นตามสวิตช์ (ซ่อน/โชว์)
+
+    local function LogResult(name, rarity, isStart)
+        if not isStart then
+            stats.rolls += 1
+            stats.byRarity[rarity] = (stats.byRarity[rarity] or 0) + 1
+        end
+        local stamp = ""
+        pcall(function() stamp = os.date("%H:%M:%S") end)
+        local entry = { n = isStart and 0 or stats.rolls, name = Pretty(name), rarity = Cap(rarity), time = stamp }
+        history[#history + 1] = entry
+        if #history > 300 then table.remove(history, 1) end
+        print(("[SmoothHub] Spin %s: %s (%s)"):format(isStart and "(start)" or ("#" .. entry.n), entry.name, entry.rarity))
+        pcall(function()
+            lastLabel.Text = entry.name .. " (" .. entry.rarity .. ")"
+            lastStack.Subtitle = (isStart and "Current family when you started" or ("Roll #" .. entry.n)) .. " | " .. SummaryText()
+        end)
+        RefreshList()
+    end
+
+    local function HistoryText()
+        local lines = {}
+        for _, e in ipairs(history) do
+            lines[#lines + 1] = ("%s  %s  %s (%s)"):format(e.n == 0 and "start" or ("#" .. e.n), e.time, e.name, e.rarity)
+        end
+        lines[#lines + 1] = "--- " .. SummaryText()
+        return table.concat(lines, "\n")
+    end
+    function _G.SmoothHubSpin.PrintHistory() print(HistoryText()) end
+    function _G.SmoothHubSpin.Clear()
+        for i = #history, 1, -1 do history[i] = nil end
+        stats.rolls, stats.byRarity = 0, {}
+        pcall(function() lastLabel.Text = "-" lastStack.Subtitle = "No rolls yet." end)
+        RefreshList()
+    end
+
+    local copyRow = SpinForm:Row()
+    copyRow:Left():TitleStack({ Title = "Spin Log", Subtitle = "Copy every family you rolled so far to the clipboard." })
+    local copyBtn = copyRow:Right():Button({ Label = "Copy", Callback = function() end })
+    BindButton(copyBtn, function()
+        local text = HistoryText()
+        pcall(function()
+            if type(setclipboard) == "function" then setclipboard(text) elseif type(toclipboard) == "function" then toclipboard(text) end
+        end)
+        print(text)
+    end)
+
+    -- ───── อ่านหน้าจอ ─────
+    -- ปุ่ม ROLL (ข้อความขึ้นต้นด้วย ROLL เช่น "ROLL (148)") จำตำแหน่งไว้ ไม่ค้นทั้งหน้าจอทุกรอบ
+    local rollObj, rollScanAt = nil, 0
+    local function FindRoll()
+        if rollObj and rollObj.Parent and IsShown(rollObj) then return rollObj end
+        rollObj = nil
+        if os.clock() - rollScanAt < 1 then return nil end
+        rollScanAt = os.clock()
+        local n = 0
+        for _, d in ipairs(PlayerGui:GetDescendants()) do
+            n += 1
+            if n % 800 == 0 then task.wait() end
+            if IsTextObj(d) and TextOf(d):match("^ROLL") and IsShown(d) then
+                rollObj = d
+                return d
+            end
+        end
+        return nil
+    end
+
+    local function RollCount(obj)
+        return tonumber(TextOf(obj):match("%((%d+)%)"))
+    end
+
+    -- Family ปัจจุบัน: ข้อความรูปแบบ "PIKALE (Common)" -> ชื่อ, ความหายาก (ตัวพิมพ์ใหญ่)
+    local famObj, famScanAt = nil, 0
+    local function ParseFamily(o)
+        local name, rarity = TextOf(o):match("^(.-)%s*%((%a+)%)$")
+        if name and RANK[rarity] then return name, rarity end
+        return nil
+    end
+    local function ReadFamily()
+        if famObj and famObj.Parent and IsShown(famObj) then
+            local n, r = ParseFamily(famObj)
+            if n then return n, r end
+        end
+        famObj = nil
+        if os.clock() - famScanAt < 0.4 then return nil end
+        famScanAt = os.clock()
+        local n = 0
+        for _, d in ipairs(PlayerGui:GetDescendants()) do
+            n += 1
+            if n % 800 == 0 then task.wait() end
+            if IsTextObj(d) and IsShown(d) then
+                local name, rarity = ParseFamily(d)
+                if name then
+                    famObj = d
+                    return name, rarity
+                end
+            end
+        end
+        return nil
+    end
+
+    -- รอจน Family ที่แสดงเปลี่ยนเป็นตัวใหม่ และค่านิ่งอยู่ >= 0.3 วิ (กันอ่านกลางแอนิเมชันสปิน) คืน true ถ้าได้ผลใหม่
+    -- ผลซ้ำตัวเดิมจะไม่เปลี่ยนค่า ก็จะรอจนครบ maxWait แล้วไปต่อ (รอบถัดไปอ่านค่าใหม่ก่อนตัดสินใจเสมอ)
+    local function WaitForNewFamily(nameBefore, rarityBefore, maxWait)
+        local t0 = os.clock()
+        local seenKey, seenAt = nil, 0
+        while os.clock() - t0 < maxWait do
+            if not Alive() or not Cfg.AutoSpin then return false end
+            local n, r = ReadFamily()
+            if n and (n ~= nameBefore or r ~= rarityBefore) then
+                local key = n .. "|" .. r
+                if key ~= seenKey then
+                    seenKey, seenAt = key, os.clock()
+                elseif os.clock() - seenAt >= 0.3 then
+                    return true
+                end
+            else
+                seenKey = nil
+            end
+            task.wait(0.05)
+        end
+        return false
+    end
+
+    -- ───── Last Roll แบบเรียลไทม์ ─────
+    -- โชว์ Family ที่ใส่อยู่ตอนนี้ทันที และอัปเดตทุกครั้งที่ผลบนหน้าจอเปลี่ยน (ไม่ต้องเปิด Auto Spin / ไม่ต้องรอดีเลย์)
+    -- อ่านได้เฉพาะตอนเปิดหน้า Family อยู่ (ป้ายชื่ออยู่ในหน้านั้น)
+    task.spawn(function()
+        local lastKey, scanAt, hinted = nil, 0, false
+        while Alive() do
+            task.wait(0.15)
+            local n, r
+            if famObj and famObj.Parent and IsShown(famObj) then
+                n, r = ParseFamily(famObj)
+            elseif IN_MENU and os.clock() - scanAt >= 3 then
+                scanAt = os.clock() -- สแกนหาป้ายใหม่ทุก 3 วิเท่านั้น (สแกนหนัก) และเฉพาะตอนอยู่ล็อบบี้ ไม่หน่วงเกมตอนฟาร์ม
+                n, r = ReadFamily()
+            end
+            if n then
+                hinted = false
+                local key = n .. "|" .. r
+                if key ~= lastKey then
+                    lastKey = key
+                    pcall(function()
+                        lastLabel.Text = Pretty(n) .. " (" .. Cap(r) .. ")"
+                        lastStack.Subtitle = "Live - your current family | " .. SummaryText()
+                    end)
+                end
+            elseif not hinted and lastKey == nil and #history == 0 then
+                hinted = true
+                pcall(function() lastStack.Subtitle = "Open the Family page to see your current family live." end)
+            end
+        end
+    end)
+
+    -- วิธีกดปุ่ม ROLL: ลองทีละวิธี วิธีแรกคือกรอบฟ้า + Enter (เหมือน Character Selection)
+    -- ถ้ากดแล้วจำนวน ROLL ไม่ลด รอบถัดไปจะเปลี่ยนไปลองวิธีถัดไป วิธีไหนติดจะจำไว้ใช้ต่อ (วิธีที่ executor ไม่รองรับจะข้ามไปเอง)
+    local pressPref = 1
+    local PRESS_METHODS = {
+        { name = "Enter", run = function(btn)
+            pcall(function() GuiService.SelectedObject = btn end)
+            task.wait(0.1)
+            pcall(function()
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                task.wait(0.05)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            end)
+            return true
+        end },
+        { name = "Activated signal", run = function(btn)
+            if type(firesignal) ~= "function" then return false end
+            return (pcall(firesignal, btn.Activated))
+        end },
+        { name = "Click signal", run = function(btn)
+            if type(firesignal) ~= "function" then return false end
+            return (pcall(firesignal, btn.MouseButton1Click))
+        end },
+        { name = "Mouse click", run = function(btn)
+            local gui = btn:FindFirstAncestorOfClass("ScreenGui")
+            local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
+            local pos = btn.AbsolutePosition + btn.AbsoluteSize / 2 + inset
+            return (pcall(function()
+                VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
+                task.wait(0.05)
+                VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
+            end))
+        end },
+        { name = "Gamepad A", run = function(btn)
+            pcall(function() GuiService.SelectedObject = btn end)
+            task.wait(0.1)
+            return (pcall(function()
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.ButtonA, false, game)
+                task.wait(0.05)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.ButtonA, false, game)
+            end))
+        end },
+    }
+
+    -- กด ROLL 1 ครั้งด้วยวิธีที่ attempt-th (attempt = 0 ใช้วิธีที่จำไว้) คืน (เลขวิธี, ชื่อวิธี) หรือ nil ถ้าไม่มีวิธีที่ใช้ได้
+    local function PressRoll(obj, attempt)
+        local btn = ToButton(obj)
+        if not btn then return nil end
+        local count = #PRESS_METHODS
+        for step = 0, count - 1 do
+            local idx = ((pressPref - 1 + (attempt or 0) + step) % count) + 1
+            local m = PRESS_METHODS[idx]
+            if m.run(btn) then return idx, m.name end
+        end
+        return nil
+    end
+
+    -- รอจนจำนวน ROLL ลดลง (= เกมรับคำสั่งแล้ว) คืน true ถ้าลดลง
+    -- หรือ Family ที่แสดงเปลี่ยนไปจากเดิม (ผลสปินออกแล้ว แม้ตัวเลขยังไม่อัปเดต)
+    local function WaitCountDrop(obj, before, maxWait, nameBefore, rarityBefore)
+        local t0 = os.clock()
+        while os.clock() - t0 < maxWait do
+            if not (obj.Parent) then return true end -- ปุ่มถูกสร้างใหม่ = หน้าอัปเดตแล้ว
+            local now = RollCount(obj)
+            if now ~= nil and now < before then return true end
+            if nameBefore and famObj and famObj.Parent then
+                local n, r = ParseFamily(famObj)
+                if n and (n ~= nameBefore or r ~= rarityBefore) then return true end
+            end
+            task.wait(0.1)
+        end
+        return false
+    end
+
+    -- กดปุ่มใด ๆ ด้วยกรอบฟ้า + Enter
+    local function PressButton(btn)
+        pcall(function() GuiService.SelectedObject = btn end)
+        task.wait(0.1)
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+            task.wait(0.05)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+        end)
+    end
+
+    local function FindShownButton(match)
+        local n = 0
+        for _, d in ipairs(PlayerGui:GetDescendants()) do
+            n += 1
+            if n % 800 == 0 then task.wait() end
+            if d:IsA("GuiButton") and IsShown(d) and match(d) then return d end
+        end
+        return nil
+    end
+
+    -- เปิดหน้า Family เอง: (1) ถ้าอยู่หน้าแต่งตัวและเห็นปุ่มไอคอน F -> กดมัน (2) ถ้าอยู่เมนูหลัก -> กด CUSTOMIZATION
+    -- กดห่างกันอย่างน้อย 2.5 วินาที และลองไม่เกิน 8 ครั้ง (ถ้าเปิดไม่ได้ จะบอกให้เปิดเอง ไม่วนกดไปเรื่อย ๆ)
+    -- หาไอคอน F จาก "ตำแหน่งบนจอ" เมื่อหาจากชื่อไม่เจอ:
+    -- หน้าแต่งตัวมีไอคอนกลมเรียงเป็นโค้งทางซ้าย (ประตู, ผม, หน้า, ไม้แขวนเสื้อ, F) ไอคอน F อยู่ล่างสุด
+    -- เลือกปุ่มสี่เหลี่ยมจัตุรัสขนาด 40-220px ที่อยู่ซีกซ้ายของจอ ต้องเจออย่างน้อย 4 ปุ่ม (กันไปกดผิดที่) แล้วเอาปุ่มล่างสุด
+    local function FindBottomIcon()
+        local cam = workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+        local cands, n = {}, 0
+        for _, d in ipairs(PlayerGui:GetDescendants()) do
+            n += 1
+            if n % 800 == 0 then task.wait() end
+            if d:IsA("GuiButton") and IsShown(d) then
+                local s = d.AbsoluteSize
+                if s.X >= 40 and s.X <= 220 and s.Y >= 40 and s.Y <= 220 and math.abs(s.X / s.Y - 1) <= 0.2 then
+                    local c = d.AbsolutePosition + s / 2
+                    if c.X < vp.X * 0.3 then cands[#cands + 1] = { btn = d, y = c.Y } end
+                end
+            end
+        end
+        if #cands < 4 then return nil end
+        table.sort(cands, function(a, b) return a.y > b.y end)
+        return cands[1].btn
+    end
+
+    -- หาตัวปุ่มที่กดได้ของข้อความหนึ่ง: (1) ตัวมันเองเป็นปุ่ม (2) ปุ่มที่ครอบอยู่ (3) ปุ่มโปร่งใสที่วางทับตำแหน่งข้อความ
+    -- (ไม่ใช้ "ปุ่มแรกในกรอบเดียวกัน" เพราะเมนูหลักมีหลายปุ่มในกรอบเดียว จะไปกดผิดเป็น PLAY)
+    local function ClickableFor(o)
+        if o:IsA("GuiButton") then return o end
+        local cur = o.Parent
+        for _ = 1, 3 do
+            if not cur or cur == PlayerGui then break end
+            if cur:IsA("GuiButton") then return cur end
+            cur = cur.Parent
+        end
+        local c = o.AbsolutePosition + o.AbsoluteSize / 2
+        local best, bestArea = nil, math.huge
+        for _, d in ipairs(PlayerGui:GetDescendants()) do
+            if d:IsA("GuiButton") and IsShown(d) then
+                local pos, size = d.AbsolutePosition, d.AbsoluteSize
+                if c.X >= pos.X and c.X <= pos.X + size.X and c.Y >= pos.Y and c.Y <= pos.Y + size.Y then
+                    local area = size.X * size.Y
+                    if area < bestArea then best, bestArea = d, area end
+                end
+            end
+        end
+        return best
+    end
+
+    -- ปุ่ม CUSTOMIZATION ที่เมนูหลัก: ต้องเห็น PLAY และ CODES อยู่ด้วย (ยืนยันว่าเป็นเมนูหลัก ไม่ใช่ป้ายหัวข้อ
+    -- "CUSTOMIZATION" ของหน้าแต่งตัว ที่ไม่ใช่ปุ่มและมีปุ่มสีผิวอยู่ข้าง ๆ)
+    local function FindMainMenuCustomize()
+        local custObj, hasPlay, hasCodes = nil, false, false
+        local n = 0
+        for _, d in ipairs(PlayerGui:GetDescendants()) do
+            n += 1
+            if n % 800 == 0 then task.wait() end
+            if IsTextObj(d) and IsShown(d) then
+                local t = TextOf(d)
+                if t == "CUSTOMIZATION" then custObj = d
+                elseif t == "PLAY" then hasPlay = true
+                elseif t == "CODES" then hasCodes = true end
+            end
+        end
+        if custObj and hasPlay and hasCodes then return ClickableFor(custObj) end
+        return nil
+    end
+
+    local navAt, navTries = 0, 0
+    local function OpenFamilyPage()
+        if os.clock() - navAt < 2.5 then return end
+        navAt = os.clock()
+        if navTries >= 8 then
+            Status("Couldn't open the Family page - open it once yourself (or run DumpButtons)")
+            return
+        end
+        local famBtn = FindShownButton(function(d)
+            if not d.Name:lower():find("family", 1, true) then return false end
+            local t = d:IsA("TextButton") and TextOf(d) or ""
+            return not t:find("X2", 1, true) and t ~= "BACK" -- ไม่ใช่ป้าย "X2 FAMILY" / ปุ่ม BACK
+        end)
+        if famBtn then
+            navTries += 1
+            Status("Opening the Family page...")
+            PressButton(famBtn)
+            return
+        end
+        local iconBtn = FindBottomIcon()
+        if iconBtn then
+            navTries += 1
+            Status("Opening the Family page (F icon)...")
+            PressButton(iconBtn)
+            return
+        end
+        local custBtn = FindMainMenuCustomize()
+        if custBtn then
+            navTries += 1
+            Status("Opening Customization...")
+            PressButton(custBtn)
+            return
+        end
+        Status("Open the Family page (menu buttons not found)")
+    end
+
+    -- ไว้หาชื่อปุ่มไอคอน F: รันตอนอยู่หน้าแต่งตัว _G.SmoothHubSpin.DumpButtons() (ก๊อปลงคลิปบอร์ด + เซฟไฟล์ SmoothHub_buttons.txt)
+    _G.SmoothHubSpin = _G.SmoothHubSpin or {}
+    function _G.SmoothHubSpin.DumpButtons()
+        local lines = { "=== visible buttons (path | class | text | image) ===" }
+        for _, d in ipairs(PlayerGui:GetDescendants()) do
+            if d:IsA("GuiButton") and IsShown(d) then
+                local path = d:GetFullName():gsub("^Players%.[^%.]+%.PlayerGui%.", "")
+                local t = d:IsA("TextButton") and (d.Text or "") or ""
+                local img = d:IsA("ImageButton") and tostring(d.Image) or ""
+                lines[#lines + 1] = path .. " | " .. d.ClassName .. " | " .. t .. " | " .. img
+            end
+        end
+        local text = table.concat(lines, "\n")
+        pcall(function()
+            if type(setclipboard) == "function" then setclipboard(text) elseif type(toclipboard) == "function" then toclipboard(text) end
+        end)
+        pcall(function() if type(writefile) == "function" then writefile("SmoothHub_buttons.txt", text) end end)
+        print(text)
+        return #lines - 1
+    end
+
+    local function Notify(text)
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "Smooth Hub - Auto Spin", Text = text, Duration = 8,
+            })
+        end)
+    end
+
+    -- ยิง Remote GET พร้อมกันค้าง (รอไม่เกิน 8 วินาที)
+    local getRemote = nil
+    local function InvokeGet(...)
+        if not getRemote or not getRemote.Parent then getRemote = GetLobbyRemote() end
+        if not getRemote then return false, "remote not found" end
+        local remote, args = getRemote, table.pack(...)
+        local done, ok, res = false, false, nil
+        task.spawn(function()
+            ok, res = pcall(function() return remote:InvokeServer(table.unpack(args, 1, args.n)) end)
+            done = true
+        end)
+        local t0 = os.clock()
+        while not done and os.clock() - t0 < 8 do task.wait(0.05) end
+        if not done then return false, "timeout" end
+        return ok, res
+    end
+
+    -- ฝาก Family ปัจจุบันลง Storage: GET:InvokeServer("Family", "Store")
+    -- ยืนยันว่าสำเร็จจากหน้าจอ: ชื่อ/ความหายากของ Family ปัจจุบันต้องเปลี่ยนไป (หรืออ่านไม่ได้เพราะช่องว่าง)
+    -- ถ้าไม่เปลี่ยน = ไม่แน่ใจว่าฝากได้ไหม -> คืน false (ผู้เรียกจะหยุดสปิน กันสปินทับของดี)
+    local function StoreCurrent(name, rarity)
+        Status(("Storing %s..."):format(Pretty(name)))
+        local ok, res = InvokeGet("Family", "Store")
+        print("[SmoothHub] Auto Spin: Store ->", ok, res)
+        if not ok then return false, tostring(res) end
+        local t0 = os.clock()
+        while os.clock() - t0 < 4 do
+            task.wait(0.4)
+            if not Alive() or not Cfg.AutoSpin then return false, "stopped" end
+            local n2, r2 = ReadFamily()
+            if n2 == nil or n2 ~= name or r2 ~= rarity then return true end
+        end
+        return false, "your family didn't change after Store"
+    end
+
+    -- กล่องถามในจอ: "ได้ Yeager (Legendary) จะเก็บไหม?" คืน "stop" | "store" | "roll" | nil (ปิดสปินระหว่างรอ / สร้างกล่องไม่ได้)
+    -- ไม่ใส่วงเล็บ "(ชื่อ)" ในข้อความ กันตัวอ่านหน้าจอของ Auto Spin เข้าใจผิดว่าเป็น Family
+    local function AskUser(name, rarity)
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "SmoothHubSpinAsk"
+        gui.ResetOnSpawn = false
+        gui.DisplayOrder = 10000
+        gui.IgnoreGuiInset = true
+        local parented = false
+        for _, getParent in ipairs({
+            function() return type(gethui) == "function" and gethui() or nil end,
+            function() return game:GetService("CoreGui") end,
+            function() return PlayerGui end,
+        }) do
+            local okP, parent = pcall(getParent)
+            if okP and parent and pcall(function() gui.Parent = parent end) and gui.Parent then
+                parented = true
+                break
+            end
+        end
+        if not parented then gui:Destroy() return nil end
+
+        local frame = Instance.new("Frame")
+        frame.AnchorPoint = Vector2.new(0.5, 0.5)
+        frame.Position = UDim2.fromScale(0.5, 0.35)
+        frame.Size = UDim2.fromOffset(400, 200)
+        frame.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+        frame.Parent = gui
+        local corner = Instance.new("UICorner") corner.CornerRadius = UDim.new(0, 12) corner.Parent = frame
+        local stroke = Instance.new("UIStroke") stroke.Color = Color3.fromRGB(70, 70, 80) stroke.Thickness = 1 stroke.Parent = frame
+
+        local function Label(text, y, h, size, color, bold)
+            local l = Instance.new("TextLabel")
+            l.BackgroundTransparency = 1
+            l.Position = UDim2.fromOffset(16, y)
+            l.Size = UDim2.new(1, -32, 0, h)
+            l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+            l.TextSize = size
+            l.TextColor3 = color
+            l.Text = text
+            l.TextXAlignment = Enum.TextXAlignment.Left
+            l.Parent = frame
+            return l
+        end
+        Label("You rolled a family", 14, 20, 14, Color3.fromRGB(160, 160, 170), false)
+        Label(Pretty(name) .. "  -  " .. Cap(rarity), 36, 34, 24, Color3.fromRGB(255, 255, 255), true)
+        Label("Do you want to keep it?", 76, 20, 14, Color3.fromRGB(200, 200, 210), false)
+
+        local choice = nil
+        local function Button(text, x, w, color, value)
+            local b = Instance.new("TextButton")
+            b.Position = UDim2.fromOffset(x, 118)
+            b.Size = UDim2.fromOffset(w, 52)
+            b.BackgroundColor3 = color
+            b.AutoButtonColor = true
+            b.Font = Enum.Font.GothamBold
+            b.TextSize = 13
+            b.TextColor3 = Color3.fromRGB(255, 255, 255)
+            b.TextWrapped = true
+            b.Text = text
+            b.Parent = frame
+            local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 8) c.Parent = b
+            b.MouseButton1Click:Connect(function() choice = value end)
+        end
+        Button("Keep it and stop", 16, 116, Color3.fromRGB(46, 125, 80), "stop")
+        Button("Store it and keep spinning", 142, 116, Color3.fromRGB(45, 95, 170), "store")
+        Button("Discard and roll again", 268, 116, Color3.fromRGB(150, 60, 60), "roll")
+
+        while choice == nil and Alive() and Cfg.AutoSpin do task.wait(0.1) end
+        gui:Destroy()
+        return choice
+    end
+
+    local function StopSpin(message)
+        Cfg.AutoSpin = false
+        Save()
+        pcall(function() spinToggle.Value = false end)
+        Status(message)
+        print("[SmoothHub] Auto Spin:", message)
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "Smooth Hub - Auto Spin", Text = message, Duration = 10,
+            })
+        end)
+    end
+
+    task.spawn(function()
+        local fails = 0
+        local pendingLog, startLogged = false, false
+        local emptySlotOk, storesSinceRoll = false, 0
+        while Alive() do
+            task.wait(0.4)
+            if not Cfg.AutoSpin then
+                fails, pendingLog, startLogged, emptySlotOk, storesSinceRoll = 0, false, false, false, 0
+                Status("Off")
+            else
+                local roll = FindRoll()
+                if not roll then
+                    OpenFamilyPage()
+                else
+                    navTries = 0
+                    local rolls = RollCount(roll)
+                    local name, rarity = ReadFamily()
+                    if name then
+                        if not startLogged then
+                            startLogged = true
+                            LogResult(name, rarity, true)
+                        elseif pendingLog then
+                            pendingLog = false
+                            LogResult(name, rarity, false)
+                        end
+                    end
+
+                    local canRoll = false
+                    if not name then
+                        if emptySlotOk then
+                            canRoll = true -- เพิ่งฝาก Family ลง Storage ช่องว่าง ไม่มีของให้สปินทับ
+                        else
+                            Status("Can't read your current family yet...")
+                        end
+                    else
+                        emptySlotOk = false
+                        local label = ("%s (%s)"):format(Pretty(name), Cap(rarity))
+                        local action = Decide(name, rarity)
+                        if action == "ask" then
+                            Status("Waiting for your choice: " .. label)
+                            Notify("You rolled " .. label .. " - keep it? Answer in the box on screen.")
+                            local choice = AskUser(name, rarity)
+                            action = choice or "wait" -- nil = ปิดสปินระหว่างรอ / สร้างกล่องไม่ได้
+                            if choice == nil and Cfg.AutoSpin then
+                                StopSpin("Stopped: couldn't show the question box, so you keep " .. label)
+                                action = "wait"
+                            end
+                        end
+                        if action == "stop" then
+                            StopSpin("Stopped: you have " .. label)
+                        elseif action == "store" then
+                            if storesSinceRoll >= 2 then
+                                StopSpin("Stopped: Store doesn't clear your family slot, so you keep " .. label)
+                            else
+                                local ok, why = StoreCurrent(name, rarity)
+                                if ok then
+                                    storesSinceRoll += 1
+                                    emptySlotOk = true
+                                    print("[SmoothHub] Auto Spin: stored " .. label)
+                                    Notify("Stored " .. label)
+                                elseif why ~= "stopped" then
+                                    StopSpin(("Stopped: couldn't store %s (%s)"):format(label, why))
+                                end
+                            end
+                        elseif action == "roll" then
+                            canRoll = true
+                        end
+                    end
+
+                    if canRoll then
+                        if rolls ~= nil and rolls <= 0 then
+                            StopSpin("Stopped: no rolls left")
+                        else
+                            Status(("Rolling... (%s left)"):format(rolls ~= nil and tostring(rolls) or "?"))
+                            local before = rolls
+                            local idx, used = PressRoll(roll, fails)
+                            local registered = true
+                            if idx == nil then
+                                registered, used = false, "no usable press method"
+                            elseif before ~= nil then
+                                registered = WaitCountDrop(roll, before, 4, name, rarity)
+                            end
+                            if not registered then
+                                fails += 1
+                                print(("[SmoothHub] Auto Spin: roll didn't register (%d/%d) via %s"):format(fails, #PRESS_METHODS, tostring(used)))
+                                Status(("Roll didn't register (%d/%d) via %s"):format(fails, #PRESS_METHODS, tostring(used)))
+                                if fails >= #PRESS_METHODS then StopSpin("Stopped: ROLL button doesn't respond (tried every press method)") end
+                            else
+                                if idx then pressPref = idx end
+                                fails = 0
+                                pendingLog = true
+                                emptySlotOk, storesSinceRoll = false, 0
+                                -- รอให้ผลออกครบ แล้วรอบถัดไปอ่าน Family ใหม่ก่อนตัดสินใจ (อ่านไม่ได้ = ไม่สปินต่อ)
+                                if Cfg.SpinUseDelay ~= false then
+                                    for _ = 1, math.floor(Cfg.SpinDelay * 10) do
+                                        if not Alive() or not Cfg.AutoSpin then break end
+                                        task.wait(0.1)
+                                    end
+                                else
+                                    -- ไม่ใช้ดีเลย์: รอจนผลใหม่ขึ้นหน้าจอและนิ่ง แล้วไปต่อทันที (สูงสุด 2.5 วิ)
+                                    WaitForNewFamily(name, rarity, 2.5)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
 
 ---------------------------------------------------------
 -- 📊 Account Overview (เช็คสถานะบัญชี)
