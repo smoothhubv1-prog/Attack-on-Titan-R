@@ -82,7 +82,7 @@ local Cfg = {
     NoClip = true,                 -- No Clip: ทะลุกำแพง/ไททันตอน Auto Farm ทำงาน
     HitAllParts = true,            -- Hit All Parts: ฟันทุกชิ้นส่วนของไททัน (Eyes / แขน / ขา / Nape) ไม่ใช่แค่ Nape
     FlySpeed = 600,                -- Tween Speed: ความเร็วที่ Auto Farm บินไปหาไททัน (studs/วินาที)
-    PartCooldown = 7,              -- Part Cooldown: แต่ละชิ้นส่วน (Eyes/แขน/ขา) ยิงซ้ำได้ทุกกี่วินาที (0 = ยิงทุกส่วนทุกครั้งที่ฟัน)
+    PartCooldown = 7,              -- Part Cooldown: แต่ละชิ้นส่วน (Eyes/แขน/ขา) ยิงซ้ำได้ทุกกี่วินาที (ต่ำสุด 4 กันยิงถี่จนเซิร์ฟเวอร์ค้าง)
     FlyHeight = 150,               -- Fly Height: ลอยสูงเหนือยอดหัวไททันกี่ studs (150 - 2000)
     AttackSpeed = 0,               -- Attack Speed: 0 = Auto, 1 = Safe, 2 = Fast, 3 = Turbo, 4 = Max
     -- Auto Farm > Game Options
@@ -97,7 +97,7 @@ local FARM_RANGES = {
     SafeTime = { 0, 100 },
     FailSafeAt = { 0, 100 },
     FlySpeed = { 100, 2000 },
-    PartCooldown = { 0, 10 },
+    PartCooldown = { 4, 10 }, -- ต่ำสุด 4 วินาที (ต่ำกว่านี้ยิงทุกส่วนถี่เกินจนเซิร์ฟเวอร์ค้าง)
     FlyHeight = { 150, 2000 },
     AttackSpeed = { 0, 5 },
     RetryAmount = { 1, 50 },
@@ -2781,7 +2781,7 @@ do
     AddFarmSlider(TuneForm, function(v) return "Attack Speed ( " .. tostring(ATTACK_SPEED_NAMES[v] or v) .. " )" end,
         "Auto adapts by itself if hits stop landing. 1 = Safe ... 4 = Max.", "AttackSpeed", "OnAttackSpeed")
     AddFarmSlider(TuneForm, function(v) return "Part Cooldown ( " .. v .. "s )" end,
-        "Delay before Eyes / Arms / Legs are hit again. 0 = every swing.", "PartCooldown", "OnPartCooldown")
+        "Delay before Eyes / Arms / Legs are hit again (minimum 4s).", "PartCooldown", "OnPartCooldown")
 
     local SafetyForm = AdvTab:PageSection({
         Title = "🛟 Safety",
@@ -3214,8 +3214,8 @@ do
     Farm.PartMode = "ByTitan"  -- "ByTitan" = ไททันทีละตัว ครบทุกส่วน | "ByPart" = รอบละชิ้นส่วน (ทุกตัวโดนส่วนเดียวกันก่อน แล้วพัก PartGap)
     Farm.PartGap = 0.03        -- (เฉพาะ ByPart) พักระหว่างรอบชิ้นส่วน (วินาที)
     Farm.PartHits = 1          -- ฟันแต่ละชิ้นส่วน (Eyes/แขน/ขา) กี่ครั้งต่อรอบ (ไททันธรรมดา 1 ครั้งก็ขาดแล้ว เพิ่มเป็น 2-3 ถ้าไททันโหด)
-    Farm.PartCooldown = Cfg.PartCooldown -- แต่ละชิ้นส่วน (Eyes/แขน/ขา) ของไททันแต่ละตัว ยิงซ้ำได้ทุกกี่วินาที (Nape ไม่ติดคูลดาวน์ ยิงทุกรอบ) ปรับที่สไลเดอร์ Part Cooldown
-    function Farm.OnPartCooldown(v) Farm.PartCooldown = v end
+    Farm.PartCooldown = math.max(FARM_RANGES.PartCooldown[1], Cfg.PartCooldown) -- แต่ละชิ้นส่วน (Eyes/แขน/ขา) ของไททันแต่ละตัว ยิงซ้ำได้ทุกกี่วินาที (Nape ไม่ติดคูลดาวน์ ยิงทุกรอบ) ปรับที่สไลเดอร์ Part Cooldown
+    function Farm.OnPartCooldown(v) Farm.PartCooldown = math.max(FARM_RANGES.PartCooldown[1], v) end
     Farm.NapeFirst = false     -- true = ยิง Nape ก่อนแล้วค่อยส่วนอื่น | false = Nape ท้ายสุด
     local function PostRemote()
         local a = game:GetService("ReplicatedStorage"):FindFirstChild("Assets")
